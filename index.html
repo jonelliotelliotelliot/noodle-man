@@ -1,0 +1,1366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noodle Guy</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #fff; }
+  canvas { display: block; }
+  /* control legend: keycaps that light up as you press them (and can be clicked/held) */
+  :root { --accent: #ff66c7; --cap: #fff; --cap-edge: #e4e0ea; --ink: #6d6577; --label: #a29bab; }
+  #keys {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+    display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-end; gap: 10px 18px;
+    max-width: calc(100vw - 32px); font: 600 11px/1 -apple-system, system-ui, sans-serif;
+    user-select: none; -webkit-user-select: none; transition: opacity .6s;
+  }
+  #keys.dim { opacity: .35; }
+  #keys:hover { opacity: 1; }
+  #keys .grp { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  #keys label { color: var(--label); font-weight: 500; letter-spacing: .02em; white-space: nowrap; }
+  #keys .k {
+    min-width: 24px; height: 24px; padding: 0 7px; box-sizing: border-box; display: inline-flex;
+    align-items: center; justify-content: center; border-radius: 7px; background: var(--cap);
+    border: 1px solid var(--cap-edge); box-shadow: 0 2px 0 var(--cap-edge); color: var(--ink);
+    cursor: pointer; transition: transform .08s, box-shadow .08s, background .15s, color .15s, border-color .15s;
+  }
+  #keys .k.down { transform: translateY(2px); box-shadow: 0 0 0 var(--cap-edge); background: var(--accent); border-color: var(--accent); color: #fff; }
+  #keys .wasd { display: grid; grid-template-columns: repeat(3, 24px); gap: 3px; }
+  #keys .wasd .k { padding: 0; }
+  #keys .wasd .k:nth-child(1) { grid-area: 1 / 2; }
+  #keys .wasd .k:nth-child(2) { grid-area: 2 / 1; }
+  #keys .wasd .k:nth-child(3) { grid-area: 2 / 2; }
+  #keys .wasd .k:nth-child(4) { grid-area: 2 / 3; }
+  #keys .space { width: 74px; }
+  #keys .mouse { width: 18px; height: 24px; color: var(--ink); }
+  .lil-gui { --background-color: rgba(250, 250, 250, 0.62); --text-color: #555; --title-background-color: rgba(240, 240, 240, 0.7);
+    --title-text-color: #555; --widget-color: rgba(225, 225, 228, 0.7); --hover-color: rgba(215, 215, 220, 0.8); --focus-color: rgba(205, 205, 210, 0.9);
+    --number-color: #8a6fa0; --string-color: #6a9a8a; }
+  .lil-gui.root { backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-radius: 8px; overflow: hidden; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19.2/dist/lil-gui.esm.min.js"
+} }
+</script>
+</head>
+<body>
+<div id="keys" aria-label="Controls">
+  <div class="grp"><div class="wasd"><span class="k" data-code="KeyW">W</span><span class="k" data-code="KeyA">A</span><span class="k" data-code="KeyS">S</span><span class="k" data-code="KeyD">D</span></div><label>walk</label></div>
+  <div class="grp"><span class="k" data-code="ShiftLeft">⇧ shift</span><label>+ run</label></div>
+  <div class="grp"><span class="k space" data-code="Space">space</span><label>jump</label></div>
+  <div class="grp"><span class="k" data-code="KeyQ">Q</span><label>scream</label></div>
+  <div class="grp"><span class="k" data-code="KeyE">E</span><label>dance</label></div>
+  <div class="grp">
+    <svg class="mouse" viewBox="0 0 18 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="1.5" width="15" height="21" rx="7.5"/><path d="M9 1.5v7"/><path d="M1.5 9h15" opacity=".35"/></svg>
+    <label>click him · click ground · drag</label>
+  </div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import GUI from 'lil-gui';
+
+// ---------- tweakables (wired to the panel) ----------
+const DEFAULTS = {
+  beanHeight: 0.84, beanWidth: 0.77, legLength: 0.71, legThickness: 0.14, jiggle: 1.25, grain: 0.095, sound: true, volume: 0.6, music: true, musicVolume: 0.5,
+  armLength: 3.3, armThickness: 0.14, armStiffness: 0.06, fingerWiggle: 1,
+  topLeft: 0xf4cf74, topRight: 0xff57ca, bottomLeft: 0x46dda3, bottomRight: 0xb7bbe6, middle: 0xff66c7,
+  hands: 0x6fafd8, lips: 0xef7a76, ground: 0xf1eef4, stem: 0xe6e6e6, curvature: 0.02,
+};
+const S = { ...DEFAULTS };
+const PALETTE_KEYS = ['topLeft', 'topRight', 'bottomLeft', 'bottomRight', 'middle', 'hands'];
+const INK = 0x2a2a2a, STEM = 0xe6e6e6;
+
+// ---------- unlit gradient (object space) — mirrored in JS so limbs match where they join ----------
+const v3 = (h) => new THREE.Vector3(((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255);
+const GRAD_VERT = /* glsl */`
+  uniform vec3 uHalf;
+  uniform float uCurve;
+  uniform vec2 uCurveC;
+  attribute vec3 aBase;   // undeformed surface point — the face is painted in this space so it rides every jiggle
+  varying vec3 vPos;
+  varying vec2 vFace;
+  varying float vFront;
+  void main() {
+    vPos = position / uHalf;
+    vFace = vec2(atan(aBase.x, aBase.z) * length(aBase.xz), aBase.y); // unrolled: arc length around, height up
+    vFront = aBase.z;
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vec2 cd = wp.xz - uCurveC;
+    wp.y -= uCurve * dot(cd, cd);
+    gl_Position = projectionMatrix * viewMatrix * wp;
+  }`;
+const GRAD_FRAG = /* glsl */`
+  uniform vec3 cTL, cTR, cBL, cBR, cMid;
+  uniform float uGrain;
+  uniform vec4 uEye;      // x offset, y, half width, half height
+  uniform vec4 uMouth;    // centre x, y, half length, half thickness
+  uniform vec4 uTeeth;    // position of each tooth along the mouth, half width, half height
+  uniform float uBlink, uOpen, uLipW, uMouthAng, uWide;
+  uniform vec2 uLook;     // face slides a little when he looks around
+  uniform vec3 uLip;
+  varying vec3 vPos;
+  varying vec2 vFace;
+  varying float vFront;
+  float grainHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+  float sdRBox(vec2 p, vec2 b, float r) { vec2 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
+  float sdEllipse(vec2 p, vec2 r) { float k0 = length(p / r), k1 = length(p / (r * r)); return k0 * (k0 - 1.0) / k1; }
+  vec3 paintFace(vec3 c, vec2 f) {
+    f -= uLook;
+    float aa = clamp(length(fwidth(f)) * 0.75, 1e-5, 0.006); // capped, or grazing angles smear ink at the silhouette
+    // mouth: a tilted pill with a lip outline, two buck teeth hanging from its top edge
+    vec2 mp = f - uMouth.xy;
+    float ca = cos(uMouthAng), sa = sin(uMouthAng);
+    mp = vec2(ca * mp.x + sa * mp.y, -sa * mp.x + ca * mp.y); // into the mouth's own (untilted) frame
+    float h = uMouth.w * uOpen;
+    float dm = sdRBox(mp, vec2(uMouth.z * uWide, h), h);
+    float lip = 1.0 - smoothstep(-aa, aa, dm - uLipW);
+    float inside = 1.0 - smoothstep(-aa, aa, dm);
+    float th = uTeeth.w, tw = uTeeth.z, ty = h - th + 0.01;
+    float dt = min(sdRBox(mp - vec2(uTeeth.x, ty), vec2(tw, th + 0.01), tw * 0.8),
+                   sdRBox(mp - vec2(uTeeth.y, ty), vec2(tw, th + 0.01), tw * 0.8));
+    c = mix(c, uLip, lip);
+    c = mix(c, vec3(0.04), inside);
+    c = mix(c, vec3(1.0), inside * (1.0 - smoothstep(-aa, aa, dt)));
+    // eyes: tall rounded pills, squashed for blinks
+    vec2 eb = vec2(uEye.z, max(uEye.w * uBlink, 0.004));
+    float er = min(uEye.z, eb.y);
+    float de = min(sdRBox(f - vec2(-uEye.x, uEye.y), eb, er), sdRBox(f - vec2(uEye.x, uEye.y), eb, er));
+    return mix(c, vec3(0.02), 1.0 - smoothstep(-aa, aa, de));
+  }
+  varying float vShade;
+  void main() {
+    float s = smoothstep(0.0, 1.0, clamp(vPos.x * 0.5 + 0.5 - vPos.z * 0.2, 0.0, 1.0));
+    float u = smoothstep(0.0, 1.0, clamp(vPos.y * 0.5 + 0.5, 0.0, 1.0));
+    vec3 c = mix(mix(cBL, cBR, s), mix(cTL, cTR, s), u);
+    vec2 d = vPos.xy - vec2(-0.15, 0.05);
+    c = mix(c, cMid, 0.75 * exp(-dot(d, d) * 2.5));
+    if (vFront > 0.0) c = paintFace(c, vFace);
+    c += (grainHash(gl_FragCoord.xy) - 0.5) * uGrain;
+    gl_FragColor = vec4(c, 1.0);
+  }`;
+function gradientMat(g, half) {
+  const m = new THREE.ShaderMaterial({
+    vertexShader: GRAD_VERT, fragmentShader: GRAD_FRAG,
+    uniforms: {
+      uGrain: GRAIN, uCurve: CURVE, uCurveC: CURVE_C, uHalf: { value: half },
+      uEye: { value: new THREE.Vector4() }, uMouth: { value: new THREE.Vector4() }, uTeeth: { value: new THREE.Vector4() },
+      uBlink: { value: 1 }, uOpen: { value: 1 }, uLipW: { value: 0.015 }, uMouthAng: { value: 0 }, uWide: { value: 1 }, uLook: { value: new THREE.Vector2() }, uLip: { value: v3(0) }, cTL: { value: v3(0) }, cTR: { value: v3(0) }, cBL: { value: v3(0) }, cBR: { value: v3(0) }, cMid: { value: v3(0) } },
+  });
+  setGradient(m, g);
+  return m;
+}
+function setGradient(m, g) {
+  const u = m.uniforms;
+  u.cTL.value.copy(v3(g.tl)); u.cTR.value.copy(v3(g.tr)); u.cBL.value.copy(v3(g.bl));
+  u.cBR.value.copy(v3(g.br)); u.cMid.value.copy(v3(g.mid));
+}
+const smooth = (x) => x * x * (3 - 2 * x);
+const clamp01 = (x) => Math.min(1, Math.max(0, x));
+function gradientAt(g, half, p) {
+  const x = p.x / half.x, y = p.y / half.y, z = p.z / half.z;
+  const s = smooth(clamp01(x * 0.5 + 0.5 - z * 0.2)), u = smooth(clamp01(y * 0.5 + 0.5));
+  const [tl, tr, bl, br, mid] = [g.tl, g.tr, g.bl, g.br, g.mid].map(v3);
+  const c = bl.lerp(br, s).lerp(tl.lerp(tr, s), u);
+  const dx = x + 0.15, dy = y - 0.05;
+  c.lerp(mid, 0.75 * Math.exp(-(dx * dx + dy * dy) * 2.5));
+  return new THREE.Color().setRGB(c.x, c.y, c.z, THREE.SRGBColorSpace);
+}
+// paper-like grain: one shared uniform, injected into the built-in materials' fragment shaders
+const GRAIN = { value: DEFAULTS.grain };
+// "rolling orb" world: everything is drawn bent down by curve·d² around the creature, so the ground
+// falls away to a horizon in every direction. Physics stays flat; only the drawing is bent.
+const CURVE = { value: 0.02 }, CURVE_C = { value: new THREE.Vector2() };
+const CURVE_GLSL = `
+  vec4 mvPosition = modelMatrix * vec4(transformed, 1.0);
+  vec2 cd = mvPosition.xz - uCurveC;
+  mvPosition.y -= uCurve * dot(cd, cd);
+  mvPosition = viewMatrix * mvPosition;
+  gl_Position = projectionMatrix * mvPosition;`;
+function grainy(m, shadow = false) {
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uGrain = GRAIN;
+    sh.uniforms.uCurve = CURVE;
+    sh.uniforms.uCurveC = CURVE_C;
+    sh.vertexShader = 'uniform float uCurve;\nuniform vec2 uCurveC;\n' + sh.vertexShader.replace('#include <project_vertex>', CURVE_GLSL);
+    sh.fragmentShader = 'uniform float uGrain;\nfloat grainHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }\n'
+      + sh.fragmentShader.replace('#include <fog_fragment>', '#include <fog_fragment>\n' + (shadow
+        ? 'gl_FragColor.a *= 1.0 + (grainHash(gl_FragCoord.xy) - 0.5) * uGrain * 7.0;'
+        : 'gl_FragColor.rgb += (grainHash(gl_FragCoord.xy) - 0.5) * uGrain;'));
+  };
+  return m;
+}
+const basic = (hex) => grainy(new THREE.MeshBasicMaterial({ color: hex }));
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+const tmp = new THREE.Vector3(), tmp2 = new THREE.Vector3(), _q = new THREE.Quaternion(), _c = new THREE.Vector3();
+
+// ---------- sound: tiny synthesized UI-style blips (Web Audio, no files) ----------
+// The context can only start after a user gesture, so it's created on the first click / key press.
+let ac = null, master = null, noiseBuf = null;
+function audioCtx() {
+  if (!ac) {
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    master = ac.createGain();
+    master.connect(ac.createDynamicsCompressor()).connect(ac.destination);
+    noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  if (ac.state === 'suspended') ac.resume();
+  setVolume();
+  startMusic();
+  startWind();
+}
+// a soft, low, slowly breathing whoosh whose level follows how close he is to a hole
+const wind = { gain: null, filt: null, level: -1 };
+function startWind() {
+  if (wind.gain || !ac) return;
+  const src = ac.createBufferSource();
+  src.buffer = noiseBuf; src.loop = true;
+  wind.filt = ac.createBiquadFilter();
+  wind.filt.type = 'lowpass'; wind.filt.frequency.value = 380; wind.filt.Q.value = 0.4;
+  const breath = ac.createOscillator(), depth = ac.createGain(); // gentle swell in the filter
+  breath.frequency.value = 0.18; depth.gain.value = 140;
+  breath.connect(depth).connect(wind.filt.frequency);
+  wind.gain = ac.createGain();
+  wind.gain.gain.value = 0;
+  src.connect(wind.filt).connect(wind.gain).connect(master);
+  src.start(); breath.start();
+}
+function updateWindSound(near, inside) {
+  if (!wind.gain) return;
+  const level = Math.round((near * 0.004 + inside * 0.016) * 10000) / 10000;
+  if (level === wind.level) return;
+  wind.level = level;
+  wind.gain.gain.setTargetAtTime(level, ac.currentTime, 0.6);
+  wind.filt.frequency.setTargetAtTime(380 + inside * 220, ac.currentTime, 0.8);
+}
+function setVolume() { if (master) master.gain.value = S.sound ? S.volume : 0; }
+addEventListener('pointerdown', audioCtx);
+addEventListener('keydown', audioCtx);
+function envelope(g, t0, vol, attack, dur) {
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+}
+function tone({ type = 'sine', f0, f1 = f0, dur = 0.15, vol = 0.1, delay = 0, attack = 0.004, vib = 0, vibHz = 0, at, out = master }) {
+  if (!ac || !S.sound) return;
+  const t0 = at ?? ac.currentTime + delay, o = ac.createOscillator(), g = ac.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(f0, t0);
+  if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+  if (vib) { // wobble — makes things sound jelly-ish
+    const l = ac.createOscillator(), lg = ac.createGain();
+    l.frequency.value = vibHz; lg.gain.value = vib;
+    l.connect(lg).connect(o.frequency);
+    l.start(t0); l.stop(t0 + dur + 0.05);
+  }
+  envelope(g, t0, vol, attack, dur);
+  o.connect(g).connect(out);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+function noise({ dur = 0.1, vol = 0.05, freq = 1000, f1 = freq, q = 1, type = 'bandpass', delay = 0, at, out = master }) {
+  if (!ac || !S.sound) return;
+  const t0 = at ?? ac.currentTime + delay, src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+  src.buffer = noiseBuf;
+  f.type = type; f.Q.value = q;
+  f.frequency.setValueAtTime(freq, t0);
+  if (f1 !== freq) f.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+  envelope(g, t0, vol, 0.005, dur);
+  src.connect(f).connect(g).connect(out);
+  src.start(t0); src.stop(t0 + dur + 0.05);
+}
+const PENTA = [261.63, 293.66, 329.63, 392, 440, 523.25, 587.33, 659.25, 783.99, 880];
+const marimba = (f, delay = 0, vol = 0.06) => { tone({ f0: f, dur: 0.35, vol, delay }); tone({ f0: f * 4, dur: 0.05, vol: vol * 0.3, delay }); };
+const sfx = {
+  step: (run) => tone({ type: 'triangle', f0: rand(480, 560) * (run ? 1.35 : 1), f1: 200, dur: run ? 0.035 : 0.06, vol: run ? 0.03 : 0.045 }),
+  jump: (v) => {
+    const k = v / 7.5;
+    tone({ f0: 260, f1: 260 + 620 * k, dur: 0.16 + 0.1 * k, vol: 0.11 * Math.max(0.5, k) });
+    tone({ type: 'triangle', f0: 520, f1: 520 + 1240 * k, dur: 0.12, vol: 0.025, delay: 0.015 });
+  },
+  land: (impact) => {
+    const k = clamp01(impact / 8);
+    tone({ f0: 170, f1: 55, dur: 0.16, vol: 0.03 + 0.16 * k });
+    noise({ dur: 0.07, vol: 0.05 * k, freq: 500, type: 'lowpass' });
+  },
+  poke: () => {
+    const f = rand(330, 440);
+    tone({ f0: f, f1: f * 1.6, dur: 0.3, vol: 0.12, vib: f * 0.08, vibHz: 22 });
+    tone({ type: 'triangle', f0: f * 2, f1: f * 2.5, dur: 0.1, vol: 0.03, delay: 0.05 });
+  },
+  tick: () => tone({ f0: 1400, f1: 900, dur: 0.045, vol: 0.05 }),
+  danceOn: () => [0, 2, 4, 7].forEach((n, i) => tone({ type: 'triangle', f0: PENTA[n + 2], dur: 0.16, vol: 0.05, delay: i * 0.07 })),
+  danceOff: () => [7, 4, 2].forEach((n, i) => tone({ type: 'triangle', f0: PENTA[n + 2], dur: 0.14, vol: 0.045, delay: i * 0.07 })),
+  beat: (bi, style) => {
+    tone({ f0: 140, f1: 45, dur: 0.14, vol: 0.1 });                                   // soft kick
+    if (bi % 2) noise({ dur: 0.035, vol: 0.02, freq: 7000, type: 'highpass' });       // tiny hat
+    const pat = style === 'twirl' ? [5, 7, 9, 7, 6, 4, 6, 7] : [0, 4, 2, 4, 3, 4, 2, 1];
+    marimba(PENTA[pat[bi % 8]]);
+    if (style === 'boogie' && bi % 2) marimba(PENTA[pat[bi % 8] + 2], 0.26, 0.035); // offbeat answer
+  },
+  whoosh: () => noise({ dur: 0.4, vol: 0.05, freq: 300, f1: 2500, q: 2.5 }),
+  scream: () => { // wobbly cartoon "AAAAH": detuned saws through two vowel formants, pitch up then sagging down
+    if (!ac || !S.sound) return;
+    const t0 = ac.currentTime, out = ac.createGain();
+    out.gain.setValueAtTime(0.0001, t0);
+    out.gain.exponentialRampToValueAtTime(0.1, t0 + 0.06);
+    out.gain.setValueAtTime(0.1, t0 + 1.0);
+    out.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.4);
+    for (const [f, q, v] of [[800, 6, 1], [1250, 8, 0.7]]) {
+      const bp = ac.createBiquadFilter(), g = ac.createGain();
+      bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q; g.gain.value = v;
+      out.connect(bp).connect(g).connect(master);
+    }
+    const lfo = ac.createOscillator(), lg = ac.createGain();
+    lfo.frequency.value = 9; lg.gain.value = 45;
+    lfo.connect(lg);
+    for (const det of [-14, 0, 11]) {
+      const o = ac.createOscillator();
+      o.type = 'sawtooth'; o.detune.value = det;
+      o.frequency.setValueAtTime(420, t0);
+      o.frequency.exponentialRampToValueAtTime(760, t0 + 0.25);
+      o.frequency.exponentialRampToValueAtTime(640, t0 + 1.0);
+      o.frequency.exponentialRampToValueAtTime(380, t0 + 1.4);
+      lg.connect(o.frequency);
+      o.connect(out); o.start(t0); o.stop(t0 + 1.45);
+    }
+    lfo.start(t0); lfo.stop(t0 + 1.45);
+    noise({ dur: 1.2, vol: 0.02, freq: 2500, q: 0.8 });
+  },
+  yawn: () => tone({ type: 'triangle', f0: 540, f1: 250, dur: 1.3, vol: 0.045, attack: 0.35, vib: 9, vibHz: 5 }),
+  pop: () => tone({ f0: rand(900, 1300), f1: rand(1800, 2400), dur: 0.06, vol: 0.03, type: 'triangle' }),
+  boing: () => tone({ f0: rand(620, 760), f1: rand(950, 1150), dur: 0.16, vol: 0.022, vib: 40, vibHz: 18 }),
+};
+
+// ---------- background music: "blip garden" ----------
+// No beat or chords — droplets, chirps, bubbles and boops scattered like a toy pond, with echo.
+// Scheduled slightly ahead on a 16th-note grid (120 bpm) so timing stays tight.
+const mtof = (m) => 440 * 2 ** ((m - 69) / 12);
+const PENTA_HI = [72, 74, 76, 79, 81, 84, 86, 88, 91, 93];
+const MUSIC_STEP = 60 / 120 / 4;
+const music = { bus: null, echo: null, timer: 0, nextT: 0, level: -1 };
+const bleep = (f, t, o = {}) => tone({ f0: f, dur: 0.09, vol: 0.02, at: t, out: music.echo, ...o });
+const bubble = (t) => { const f = rand(700, 1100); tone({ f0: f, f1: f * rand(1.4, 1.9), dur: 0.12, vol: 0.015, vib: 30, vibHz: 14, at: t, out: music.echo }); };
+function musicStep(t) {
+  const r = Math.random();
+  if (r < 0.12) { const f = mtof(pick(PENTA_HI)); tone({ f0: f, f1: f * 1.3, dur: 0.08, vol: 0.022, at: t, out: music.echo }); } // droplet
+  else if (r < 0.15) { const f = rand(1200, 1800); bleep(f, t, { dur: 0.04 }); bleep(f * 1.5, t + 0.06, { dur: 0.04 }); }  // chirp
+  else if (r < 0.19) for (let k = 0; k < 3; k++) bubble(t + k * 0.07);                                                    // bubbles
+  else if (r < 0.205) tone({ f0: 220, f1: 160, dur: 0.18, vol: 0.04, at: t, out: music.echo });                           // boop
+}
+function startMusic() {
+  if (music.timer || !ac) return;
+  music.bus = ac.createGain();
+  music.bus.gain.value = 0;
+  music.bus.connect(master);
+  // echo send for the melodic bits
+  const d = ac.createDelay(1), fb = ac.createGain(), wet = ac.createGain(), lp = ac.createBiquadFilter();
+  d.delayTime.value = 0.375; fb.gain.value = 0.32; wet.gain.value = 0.35; lp.type = 'lowpass'; lp.frequency.value = 2400;
+  music.echo = ac.createGain();
+  music.echo.connect(music.bus);
+  music.echo.connect(d); d.connect(lp).connect(fb).connect(d); lp.connect(wet).connect(music.bus);
+  music.nextT = ac.currentTime + 0.2;
+  music.timer = setInterval(scheduleMusic, 50);
+}
+function scheduleMusic() {
+  while (music.nextT < ac.currentTime + 0.25) {
+    musicStep(music.nextT);
+    music.nextT += MUSIC_STEP;
+  }
+}
+// level follows the panel, and ducks under the dance beat
+function updateMusicLevel(isDancing) {
+  if (!music.bus) return;
+  const level = S.music ? S.musicVolume * (isDancing ? 0.2 : 1) : 0;
+  if (level !== music.level) { music.bus.gain.setTargetAtTime(level, ac.currentTime, 0.4); music.level = level; }
+}
+
+// ---------- renderer / scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xffffff);
+
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(6, 6.5, 10);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.2, 0);
+controls.enableDamping = true;
+controls.enablePan = false;
+controls.minDistance = 5;
+controls.maxDistance = 25;
+controls.maxPolarAngle = Math.PI * 0.47;
+
+// the light only exists to throw soft shadows onto the floor
+const sun = new THREE.DirectionalLight(0xffffff, 1);
+sun.position.set(4, 12, 6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12, near: 1, far: 40 });
+scene.add(sun, sun.target);
+
+// finely subdivided so it bends smoothly. It slides along under the creature, so it never ends.
+const groundGeo = new THREE.PlaneGeometry(140, 140, 180, 180).rotateX(-Math.PI / 2);
+const groundMat = basic(DEFAULTS.ground);
+const groundFill = new THREE.Mesh(groundGeo, groundMat);
+const ground = new THREE.Mesh(groundGeo, grainy(new THREE.ShadowMaterial({ opacity: 0.1, polygonOffset: true, polygonOffsetFactor: -1 }), true));
+ground.receiveShadow = true;
+groundFill.frustumCulled = ground.frustumCulled = false;
+scene.add(groundFill, ground);
+
+// ---------- stick flowers: a stem, maybe a leaf, and a simple shape on top ----------
+const HEADS = [
+  (s) => new THREE.SphereGeometry(s, 32, 16),
+  (s) => new THREE.BoxGeometry(s * 1.5, s * 1.5, s * 1.5),
+  (s) => new THREE.ConeGeometry(s, s * 1.8, 32),
+  (s) => new THREE.TorusGeometry(s * 0.85, s * 0.32, 16, 40),
+  (s) => new THREE.OctahedronGeometry(s * 1.2, 0),
+];
+const stemMat = basic(STEM);
+const flowers = [];
+const FLOWER_NEAR = 2.5, FLOWER_FAR = 15, FLOWER_GONE = 17;
+for (let i = 0; i < 14; i++) {
+  const a = Math.random() * Math.PI * 2, r = rand(FLOWER_NEAR, FLOWER_FAR);
+  const h = rand(0.8, 1.7), size = rand(0.09, 0.15);
+  const pivot = new THREE.Group();
+  pivot.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, h, 10), stemMat);
+  stem.position.y = h / 2;
+  pivot.add(stem);
+  if (Math.random() < 0.6) {
+    const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 8), stemMat);
+    leaf.scale.set(1, 0.3, 0.5);
+    const side = Math.random() < 0.5 ? -1 : 1;
+    leaf.position.set(side * 0.1, h * rand(0.25, 0.5), 0);
+    leaf.rotation.z = side * 0.5;
+    pivot.add(leaf);
+  }
+  const head = new THREE.Mesh(pick(HEADS)(size), grainy(new THREE.MeshBasicMaterial()));
+  head.userData.colorKey = pick(PALETTE_KEYS); // recoloured from the panel in rebuild()
+  head.position.y = h + size * 0.7;
+  head.rotation.set(rand(-0.3, 0.3), Math.random() * 6, rand(-0.3, 0.3));
+  pivot.add(head);
+  pivot.rotation.y = Math.random() * 6;
+  pivot.traverse((m) => { m.castShadow = true; });
+  const tilt = new THREE.Group(); // separate group so the lean isn't affected by pivot's spin
+  tilt.position.copy(pivot.position);
+  pivot.position.set(0, 0, 0);
+  tilt.add(pivot);
+  scene.add(tilt);
+  flowers.push({ g: tilt, head, tx: 0, tz: 0, vx: 0, vz: 0, ph: Math.random() * 6, s: 1, sv: 0 });
+}
+// a flower that's drifted out of range is replanted out near the horizon — ahead of the creature if
+// it's moving — and pops up with a springy scale
+function replant(f, center, dir) {
+  const a = dir ? Math.atan2(dir.z, dir.x) + rand(-1.3, 1.3) : Math.random() * Math.PI * 2;
+  const r = rand(FLOWER_FAR - 4, FLOWER_FAR);
+  f.g.position.set(center.x + Math.cos(a) * r, 0, center.z + Math.sin(a) * r);
+  f.tx = f.tz = f.vx = f.vz = 0;
+  f.s = 0; f.sv = 0;
+}
+
+// ---------- wind vents: grates in the ground that blow air straight up (they wander off-screen and reappear) ----------
+const VENT_R = 1.2, VENT_REACH = VENT_R * 1.2, VENT_GONE = 18, VENT_LIFT = 170;
+const holeTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d'), grad = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+  // nearly flat inside with a short feathered rim, so it reads as a crisp shape rather than a smudge
+  grad.addColorStop(0, 'rgba(0,0,0,0.12)'); grad.addColorStop(0.86, 'rgba(0,0,0,0.105)'); grad.addColorStop(0.94, 'rgba(0,0,0,0.05)'); grad.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(c);
+})();
+const holeMat = grainy(new THREE.MeshBasicMaterial({ color: 0x000000, map: holeTex, transparent: true, depthWrite: false }));
+const windGeo = new THREE.PlaneGeometry(1, 1);
+const WIND_KEYS = ['topLeft', 'topRight', 'bottomLeft', 'bottomRight', 'middle', 'hands', 'lips'];
+const vents = [0, 1].map((i) => {
+  const g = new THREE.Group();
+  // a subtle hole: just a soft, neutral shadow on the ground with a feathered edge
+  const spot = new THREE.Mesh(new THREE.PlaneGeometry(VENT_R * 2.2, VENT_R * 2.2, 8, 8).rotateX(-Math.PI / 2), holeMat);
+  spot.position.y = 0.012;
+  g.add(spot);
+  // rising squares, same look as the poke particles; each one loops: born low, floats up, fades
+  const motes = Array.from({ length: 16 }, () => {
+    const m = new THREE.Mesh(windGeo, grainy(new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide })));
+    g.add(m);
+    const mote = { m, ph: Math.random(), speed: rand(0.45, 0.8), size: 0, spin: 0, x: 0, z: 0, sway: Math.random() * 6 };
+    respawnMote(mote);
+    return mote;
+  });
+  const a = i * Math.PI + rand(-0.6, 0.6), r = rand(5, 8);
+  g.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+  scene.add(g);
+  return { g, motes, s: 1, sv: 0 };
+});
+function respawnMote(mo) {
+  const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * VENT_R * 0.6;
+  mo.x = Math.cos(a) * r; mo.z = Math.sin(a) * r;
+  mo.size = rand(0.035, 0.07);
+  mo.spin = rand(-3, 3);
+  mo.m.material.color.setHex(S[pick(WIND_KEYS)]);
+}
+function replantVent(v, center, dir) {
+  // try a few spots ahead; keep well clear of the other hole so they never overlap
+  for (let tries = 0; tries < 30; tries++) {
+    const a = (dir && tries < 15 ? Math.atan2(dir.z, dir.x) + rand(-1, 1) : Math.random() * Math.PI * 2);
+    const r = rand(11, 15);
+    v.g.position.set(center.x + Math.cos(a) * r, 0, center.z + Math.sin(a) * r);
+    if (vents.every((o) => o === v || o.g.position.distanceTo(v.g.position) > VENT_R * 6)) break;
+  }
+  v.s = 0; v.sv = 0;
+}
+// upward push at a point: strongest over the middle of a vent, fading with height
+function ventLift(x, y, z, reach = VENT_REACH) {
+  let f = 0;
+  for (const v of vents) {
+    const d = Math.hypot(x - v.g.position.x, z - v.g.position.z);
+    if (d < reach) f += (1 - d / reach) * clamp01(1 - y / 5) * v.s;
+  }
+  return f;
+}
+
+// ---------- character dimensions (recomputed from S) ----------
+let R, LEN, LEG_H, HALF_H, BODY_Y;
+const BODY_HALF = new THREE.Vector3();
+const grad = () => ({ tl: S.topLeft, tr: S.topRight, bl: S.bottomLeft, br: S.bottomRight, mid: S.middle });
+function dims() {
+  R = S.beanWidth; LEN = S.beanHeight; LEG_H = S.legLength;
+  HALF_H = R + LEN / 2;
+  BODY_Y = LEG_H + HALF_H;
+  BODY_HALF.set(R * 1.15, HALF_H, R);
+}
+// The bean: a capsule that's a little wider at the bottom.
+const yNorm = (y) => clamp01((y + HALF_H) / (2 * HALF_H));
+const bulge = (y, amt) => 1 + amt * Math.pow(1 - yNorm(y), 1.5);
+const shapeK = (y) => bulge(y, 0.18);
+function capR(y) {
+  const dy = Math.max(0, Math.abs(y) - LEN / 2);
+  return Math.sqrt(Math.max(0, R * R - dy * dy));
+}
+const surfR = (y) => capR(y) * shapeK(y);
+
+// jiggle state: the top of the bean lags behind (world-space spring) and squashes on each footfall
+const lagW = new THREE.Vector3(), lagV = new THREE.Vector3(), lagL = new THREE.Vector3();
+let squash = 0, squashV = 0;
+let hc = 1, hs = 0; // cos/sin of -heading: world → body-space rotation
+
+// poke ripples: rings travel over the bean from the poke point and a "gulp" bulge runs down each limb
+const ripples = []; // { p: body-space origin, t0, amp }
+const RIPPLE_C = 3.2, RIPPLE_K = 8;
+const _n = new THREE.Vector3();
+function rippleAt(x, y, z) {
+  let sum = 0;
+  for (const rp of ripples) {
+    const age = t - rp.t0, front = RIPPLE_C * age - Math.hypot(x - rp.p.x, y - rp.p.y, z - rp.p.z);
+    if (front > 0) sum += rp.amp * Math.sin(front * RIPPLE_K) * Math.exp(-front * 1.4 - age * 1.2);
+  }
+  return sum;
+}
+function addRipple(v) { // push a body-space point out along the surface normal
+  if (!ripples.length) return v;
+  const a = rippleAt(v.x, v.y, v.z);
+  _n.set(v.x, v.y - THREE.MathUtils.clamp(v.y, -LEN / 2, LEN / 2), v.z).normalize();
+  return v.addScaledVector(_n, a);
+}
+function limbPulse(root, len, u) {
+  let sum = 0;
+  for (const rp of ripples) {
+    const age = t - rp.t0, x = (RIPPLE_C * age - (root.distanceTo(rp.p) + u * len)) / 0.25;
+    sum += rp.amp * 10 * Math.exp(-x * x - age * 0.9);
+  }
+  return sum;
+}
+function deform(base, out) {
+  const k = clamp01((base.y + HALF_H) / (2 * HALF_H)), w = k * k;
+  const sy = 1 + squash, sx = 1 / Math.sqrt(sy);
+  return out.set(base.x * sx + lagL.x * w, -HALF_H + (base.y + HALF_H) * sy, base.z * sx + lagL.z * w);
+}
+
+dims();
+const guy = new THREE.Group();          // root: position + heading
+scene.add(guy);
+const body = new THREE.Group();         // waddles
+guy.add(body);
+
+const beanMat = gradientMat(grad(), BODY_HALF);
+const bean = new THREE.Mesh(new THREE.BufferGeometry(), beanMat);
+bean.castShadow = true;
+bean.frustumCulled = false;
+body.add(bean);
+// The bean is a lathe of a capsule outline with evenly spaced rings; the shaped rest pose is kept
+// so jiggle + ripples can be re-applied to it every frame.
+let beanBase = null;
+function buildBean() {
+  bean.geometry.dispose();
+  const pts = [], N = 96, arc = (Math.PI / 2) * R, total = 2 * arc + LEN;
+  for (let i = 0; i <= N; i++) {
+    const d = (i / N) * total;
+    if (d < arc) { const a = -Math.PI / 2 + d / R; pts.push(new THREE.Vector2(R * Math.cos(a), -LEN / 2 + R * Math.sin(a))); }
+    else if (d < arc + LEN) pts.push(new THREE.Vector2(R, -LEN / 2 + d - arc));
+    else { const a = (d - arc - LEN) / R; pts.push(new THREE.Vector2(R * Math.cos(a), LEN / 2 + R * Math.sin(a))); }
+  }
+  const g = new THREE.LatheGeometry(pts, 72);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const k = shapeK(p.getY(i));
+    p.setX(i, p.getX(i) * k);
+    p.setZ(i, p.getZ(i) * k);
+  }
+  beanBase = Float32Array.from(p.array);
+  g.setAttribute('aBase', new THREE.BufferAttribute(beanBase, 3));
+  bean.geometry = g;
+}
+function deformBean() {
+  const p = bean.geometry.attributes.position, a = p.array;
+  for (let i = 0; i < a.length; i += 3) {
+    const y = beanBase[i + 1];
+    tmp.set(beanBase[i], y, beanBase[i + 2]);
+    const rv = ripples.length ? rippleAt(tmp.x, y, tmp.z) : 0;
+    if (rv) tmp.addScaledVector(_n.set(tmp.x, y - THREE.MathUtils.clamp(y, -LEN / 2, LEN / 2), tmp.z).normalize(), rv);
+    deform(tmp, tmp2);
+    a[i] = tmp2.x; a[i + 1] = tmp2.y; a[i + 2] = tmp2.z;
+  }
+  p.needsUpdate = true;
+}
+
+// face — painted straight onto the bean by its shader. These set where things sit, in body units.
+function placeFace() {
+  const u = beanMat.uniforms, k = R / 0.77, ey = HALF_H * 0.61;
+  u.uEye.value.set(0.215 * k, ey, 0.02 * k, 0.041 * k);
+  u.uMouth.value.set(0, ey - 0.032 * k, 0.101 * k, 0.021 * k);
+  u.uMouthAng.value = -0.19;                                            // tilts down to the right
+  u.uTeeth.value.set(0.006 * k, 0.046 * k, 0.0135 * k, 0.015 * k); // nudged right of centre
+  u.uLipW.value = 0.013 * k;
+  u.uLip.value.copy(v3(S.lips));
+}
+
+// ---------- limbs: tubes rebuilt every frame, coloured to flow out of the body ----------
+class Limb {
+  constructor(parent, segs, radial) {
+    Object.assign(this, { segs, radial, radius: 0.1 });
+    this.colors = new Float32Array((segs + 1) * (radial + 1) * 3);
+    this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), grainy(new THREE.MeshBasicMaterial({ vertexColors: true })));
+    this.mesh.castShadow = true;
+    this.mesh.frustumCulled = false;
+    parent.add(this.mesh);
+  }
+  setColors(from, to, blendEnd = 1) {
+    const c = new THREE.Color();
+    for (let i = 0; i <= this.segs; i++) {
+      c.copy(from).lerp(to, smooth(clamp01(i / this.segs / blendEnd)));
+      for (let j = 0; j <= this.radial; j++) c.toArray(this.colors, (i * (this.radial + 1) + j) * 3);
+    }
+  }
+  set(points, pulse) {
+    this.mesh.geometry.dispose();
+    const curve = new THREE.CatmullRomCurve3(points);
+    const g = new THREE.TubeGeometry(curve, this.segs, this.radius, this.radial, false);
+    if (pulse) { // swell rings around the centreline where the gulp is passing
+      const a = g.attributes.position.array;
+      for (let i = 0; i <= this.segs; i++) {
+        const b = pulse(i / this.segs);
+        if (Math.abs(b) < 0.01) continue;
+        curve.getPointAt(i / this.segs, tmp);
+        for (let j = 0; j <= this.radial; j++) {
+          const k = (i * (this.radial + 1) + j) * 3;
+          a[k] = tmp.x + (a[k] - tmp.x) * (1 + b);
+          a[k + 1] = tmp.y + (a[k + 1] - tmp.y) * (1 + b);
+          a[k + 2] = tmp.z + (a[k + 2] - tmp.z) * (1 + b);
+        }
+      }
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
+    this.mesh.geometry = g;
+  }
+}
+
+// four legs: hip sits inside the bean, thigh splays out, shin drops straight down
+const footGeo = new THREE.SphereGeometry(1, 16, 10);
+const legs = [[-1, 1, 0], [1, 1, Math.PI], [-1, -1, Math.PI], [1, -1, 0]].map(([sx, sz, off]) => {
+  const limb = new Limb(guy, 12, 12);
+  const foot = new THREE.Mesh(footGeo, grainy(new THREE.MeshBasicMaterial()));
+  foot.castShadow = true;
+  guy.add(foot);
+  return { sx, sz, off, limb, foot, x: 0, z: 0, hip: new THREE.Vector3(), pts: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] };
+});
+function buildLegs() {
+  for (const l of legs) {
+    l.x = l.sx * R * 0.61; l.z = l.sz * R * 0.42;
+    l.hip.set(l.x * 0.6, -HALF_H + 0.38, l.z * 0.6); // deep inside the bean, so no open tube end can peek out
+    const col = gradientAt(grad(), BODY_HALF, tmp.set(l.x * 0.8, -HALF_H, l.z));
+    l.limb.radius = S.legThickness;
+    l.limb.setColors(col, col);
+    l.foot.material.color.copy(col);
+    l.foot.scale.setScalar(S.legThickness);
+  }
+}
+
+// noodle arms: verlet rope, body colour at the shoulder fading into the hand colour
+const ARM_N = 22, ARM_SEGS = 60, ARM_RADIAL = 12;
+const GRAV = new THREE.Vector3(0, -22, 0);
+const handMat = basic(S.hands);
+
+function makeHand(side) {
+  const g = new THREE.Group();
+  // wrist cap: same radius as the arm, so the tube's open end is always covered
+  const wrist = new THREE.Mesh(new THREE.SphereGeometry(0.1, 20, 12), handMat);
+  const palm = new THREE.Mesh(new THREE.SphereGeometry(0.15, 24, 14), handMat);
+  palm.scale.set(1, 0.6, 0.95);
+  palm.position.z = 0.09;
+  g.add(wrist, palm);
+  // each finger is two jointed segments (knuckle → tip) so it can curl and wiggle
+  const segGeo = new THREE.CapsuleGeometry(0.046, 0.05, 4, 12);
+  segGeo.rotateX(Math.PI / 2);
+  segGeo.translate(0, 0, 0.045);
+  const fingers = [];
+  const finger = (x, z, yaw, len) => {
+    const k1 = new THREE.Group();
+    k1.position.set(x, 0, z);
+    k1.rotation.y = yaw;
+    const k2 = new THREE.Group();
+    k2.position.z = 0.085 * len;
+    k1.add(new THREE.Mesh(segGeo, handMat), k2);
+    k2.add(new THREE.Mesh(segGeo, handMat));
+    g.add(k1);
+    fingers.push({ k1, k2, yaw, ph: Math.random() * 6, speed: rand(4, 6.5) });
+  };
+  finger(-0.075, 0.17, -0.4, 1);
+  finger(0, 0.2, 0, 1.1);
+  finger(0.075, 0.17, 0.4, 1);
+  finger(side * 0.12, 0.05, side * 1.15, 0.9); // thumb
+  g.userData.fingers = fingers;
+  g.traverse((m) => { m.castShadow = true; });
+  scene.add(g);
+  return g;
+}
+function wiggleHand(hand, t) {
+  const w = S.fingerWiggle;
+  for (const f of hand.userData.fingers) {
+    const a = t * f.speed + f.ph;
+    f.k1.rotation.x = (-0.25 + 0.3 * Math.sin(a)) * w;          // + curls toward the floor
+    f.k2.rotation.x = (0.15 + 0.45 * Math.sin(a - 0.9)) * w;
+    f.k1.rotation.y = f.yaw + 0.15 * Math.sin(a * 0.6 + 1) * w;
+  }
+}
+
+class Noodle {
+  constructor(side) {
+    this.side = side; // -1 left, +1 right
+    this.shoulderBase = new THREE.Vector3();
+    this.shoulder = new THREE.Vector3();
+    this.limb = new Limb(scene, ARM_SEGS, ARM_RADIAL);
+    this.pos = []; this.prev = [];
+    for (let i = 0; i < ARM_N; i++) {
+      const p = new THREE.Vector3(side * (0.6 + i * 0.07), Math.max(0.1, BODY_Y - i * 0.1), 0);
+      this.pos.push(p); this.prev.push(p.clone());
+    }
+    this.hand = makeHand(side);
+  }
+  build() {
+    this.seg = S.armLength / (ARM_N - 1);
+    const col = gradientAt(grad(), BODY_HALF, tmp.set(this.side * surfR(0), 0, 0.05));
+    this.limb.radius = S.armThickness;
+    this.limb.setColors(col, handMat.color, 0.75);
+    this.hand.scale.setScalar(S.armThickness / 0.1);
+  }
+  step(dt) {
+    const { pos, prev, seg } = this;
+    const r = S.armThickness;
+    // recomputed each step because the blob shape breathes
+    this.shoulderBase.set(this.side * (surfR(0) - Math.max(0.08, r)), 0, 0.05);
+    body.localToWorld(pos[0].copy(deform(this.shoulderBase, this.shoulder)));
+    prev[0].copy(pos[0]);
+
+    for (let i = 1; i < ARM_N; i++) {
+      const p = pos[i], q = prev[i];
+      tmp.subVectors(p, q).multiplyScalar(0.985);
+      q.copy(p);
+      p.add(tmp).addScaledVector(GRAV, dt * dt);
+      const lift = ventLift(p.x, p.y, p.z, VENT_R * 2.2); // hole: shove up and whip about in gusts (arms catch a wider column)
+      if (lift > 0) {
+        p.y += lift * VENT_LIFT * (0.75 + 0.5 * Math.sin(t * 17 + i * 1.7)) * dt * dt;
+        const gust = t * 9 + this.side * 2.1, k = (i / ARM_N) * 110; // tips whip hardest
+        p.x += lift * (Math.sin(gust + i * 0.45) + 0.6 * Math.sin(gust * 2.3 - i * 0.3)) * k * dt * dt;
+        p.z += lift * (Math.cos(gust * 1.3 + i * 0.5) + 0.6 * Math.cos(gust * 1.9 + i * 0.2)) * k * dt * dt;
+      }
+    }
+
+    // shoulder stiffness: first few joints reach out sideways and a bit down
+    // when dancing, the arms stiffen and wave up and down, alternating sides
+    const wave = Math.sin(danceBeat + (this.side > 0 ? 0 : Math.PI));
+    const out = tmp2.set(this.side, -0.55 + boogieA * (0.45 + 0.9 * wave), 0.15 + boogieA * 0.25)
+      .normalize().applyQuaternion(body.getWorldQuaternion(_q));
+    const stiff = S.armStiffness + boogieA * (0.5 - S.armStiffness);
+    for (let i = 1, n = boogieA > 0.05 ? 9 : 5; i < n; i++) {
+      tmp.copy(pos[0]).addScaledVector(out, i * seg);
+      pos[i].lerp(tmp, stiff / (boogieA > 0.05 ? Math.sqrt(i) : i));
+    }
+
+    const center = body.getWorldPosition(_c);
+    for (let it = 0; it < 14; it++) {
+      for (let i = 1; i < ARM_N; i++) {
+        const a = pos[i - 1], b = pos[i];
+        tmp.subVectors(b, a);
+        const d = tmp.length() || 1e-6;
+        const diff = (d - seg) / d;
+        if (i === 1) b.addScaledVector(tmp, -diff);
+        else { a.addScaledVector(tmp, diff * 0.5); b.addScaledVector(tmp, -diff * 0.5); }
+      }
+      for (let i = 2; i < ARM_N; i++) {
+        const p = pos[i];
+        // keep out of the (jiggling) bean
+        const ly = THREE.MathUtils.clamp(p.y - center.y, -LEN / 2, LEN / 2);
+        const w = yNorm(ly) ** 2;
+        tmp.set(center.x + lagW.x * w, center.y + ly, center.z + lagW.z * w);
+        tmp.subVectors(p, tmp);
+        const d = tmp.length(), min = R * shapeK(ly) + r + 0.02;
+        if (d < min && d > 1e-5) p.addScaledVector(tmp, (min - d) / d);
+        if (p.y < r) p.y = r;
+      }
+    }
+
+    // ground friction → the arms drag
+    for (let i = 2; i < ARM_N; i++) {
+      if (pos[i].y <= r + 0.01) {
+        prev[i].x += (pos[i].x - prev[i].x) * 0.35;
+        prev[i].z += (pos[i].z - prev[i].z) * 0.35;
+      }
+    }
+  }
+  render() {
+    const len = S.armLength;
+    this.limb.set(this.pos, ripples.length ? (u) => limbPulse(this.shoulderBase, len, u) : null);
+    this.hand.scale.setScalar((S.armThickness / 0.1) * (1 + 0.6 * limbPulse(this.shoulderBase, len, 1)));
+    const tip = this.pos[ARM_N - 1];
+    tmp.subVectors(tip, this.pos[ARM_N - 2]).normalize();
+    tmp.y *= 0.7;
+    this.hand.position.copy(tip);
+    this.hand.lookAt(tmp.add(tip));
+    wiggleHand(this.hand, t);
+  }
+}
+const arms = [new Noodle(-1), new Noodle(1)];
+
+function rebuild() {
+  dims();
+  setGradient(beanMat, grad());
+  GRAIN.value = S.grain;
+  stemMat.color.setHex(S.stem);
+  document.documentElement.style.setProperty('--accent', '#' + S.middle.toString(16).padStart(6, '0'));
+  CURVE.value = S.curvature;
+  groundMat.color.setHex(S.ground);
+  handMat.color.setHex(S.hands);
+  buildBean();
+  placeFace();
+  buildLegs();
+  arms.forEach((a) => a.build());
+  for (const f of flowers) f.head.material.color.setHex(S[f.head.userData.colorKey]);
+}
+rebuild();
+
+// ---------- controls panel ----------
+const gui = new GUI({ title: 'Noodle' });
+const fb = gui.addFolder('Body');
+fb.add(S, 'beanHeight', 0.2, 1.8, 0.01).name('bean height');
+fb.add(S, 'beanWidth', 0.4, 0.95, 0.01).name('bean width');
+fb.add(S, 'legLength', 0.2, 1.3, 0.01).name('leg length');
+fb.add(S, 'legThickness', 0.05, 0.22, 0.005).name('leg thickness');
+fb.add(S, 'jiggle', 0, 3, 0.05);
+fb.add(S, 'grain', 0, 0.2, 0.005);
+fb.add(S, 'curvature', 0, 0.08, 0.001).name('world curve');
+const fa = gui.addFolder('Arms');
+fa.add(S, 'armLength', 1, 7, 0.05).name('length');
+fa.add(S, 'armThickness', 0.04, 0.2, 0.005).name('thickness');
+fa.add(S, 'armStiffness', 0, 0.8, 0.01).name('shoulder stiffness');
+fa.add(S, 'fingerWiggle', 0, 3, 0.05).name('finger wiggle');
+const fc = gui.addFolder('Colours');
+fc.addColor(S, 'topLeft').name('top left');
+fc.addColor(S, 'topRight').name('top right');
+fc.addColor(S, 'bottomLeft').name('bottom left');
+fc.addColor(S, 'bottomRight').name('bottom right');
+fc.addColor(S, 'middle');
+fc.addColor(S, 'lips');
+fc.addColor(S, 'hands');
+fc.addColor(S, 'ground');
+fc.addColor(S, 'stem').name('flower stem');
+const fs = gui.addFolder('Sound');
+fs.add(S, 'sound').name('on  (M)');
+fs.add(S, 'volume', 0, 1, 0.01).name('master volume');
+fs.add(S, 'music');
+fs.add(S, 'musicVolume', 0, 1, 0.01).name('music volume');
+gui.add({ reset: () => { Object.assign(S, DEFAULTS); gui.controllersRecursive().forEach((c) => c.updateDisplay()); rebuild(); } }, 'reset').name('reset all');
+gui.onChange(() => { rebuild(); setVolume(); });
+fc.close();
+fs.close();
+if (innerWidth < 900) gui.close();
+
+// ---------- input ----------
+const keys = new Set();
+addEventListener('keydown', (e) => {
+  if (e.target.closest?.('.lil-gui')) return;
+  keys.add(e.code);
+  if (e.code.startsWith('Arrow')) e.preventDefault();
+  if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) jump(); }
+  if (e.code === 'KeyE' && !e.repeat) toggleDance();
+  if (e.code === 'KeyQ' && !e.repeat) scream();
+  if (e.code === 'KeyM' && !e.repeat) { S.sound = !S.sound; setVolume(); gui.controllersRecursive().forEach((c) => c.updateDisplay()); }
+});
+addEventListener('keyup', (e) => keys.delete(e.code));
+
+// legend: light keys up as they're pressed; keycaps can be pressed with the mouse too; fades when idle
+const legend = document.getElementById('keys');
+const keyEls = [...legend.querySelectorAll('.k[data-code]')];
+const KEY_ALIAS = { ArrowUp: 'KeyW', ArrowLeft: 'KeyA', ArrowDown: 'KeyS', ArrowRight: 'KeyD', ShiftRight: 'ShiftLeft' };
+const lightKey = (code, on) => keyEls.forEach((el) => { if (el.dataset.code === (KEY_ALIAS[code] || code)) el.classList.toggle('down', on); });
+let dimTimer = 0;
+function wakeLegend() { legend.classList.remove('dim'); clearTimeout(dimTimer); dimTimer = setTimeout(() => legend.classList.add('dim'), 7000); }
+wakeLegend();
+addEventListener('keydown', (e) => { lightKey(e.code, true); wakeLegend(); });
+addEventListener('keyup', (e) => lightKey(e.code, false));
+for (const el of keyEls) {
+  const send = (type) => dispatchEvent(new KeyboardEvent(type, { code: el.dataset.code }));
+  let held = false;
+  el.addEventListener('pointerdown', (e) => { e.preventDefault(); held = true; send('keydown'); });
+  const release = () => { if (held) { held = false; send('keyup'); } };
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointerleave', release);
+}
+
+let goal = null;
+const marker = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.3, 40), basic(0xd4d0d8));
+marker.rotation.x = -Math.PI / 2;
+marker.position.y = 0.01;
+marker.visible = false;
+scene.add(marker);
+
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+function pickBentGround({ origin: o, direction: d }) {
+  const k = CURVE.value, ax = o.x - CURVE_C.value.x, az = o.z - CURVE_C.value.y;
+  const A = k * (d.x * d.x + d.z * d.z), B = 2 * k * (ax * d.x + az * d.z) + d.y, C = k * (ax * ax + az * az) + o.y;
+  let s;
+  if (A < 1e-9) s = -C / B;
+  else {
+    const disc = B * B - 4 * A * C;
+    if (disc < 0) return null; // ray sails over the horizon
+    s = (-B - Math.sqrt(disc)) / (2 * A);
+    if (s < 0) s = (-B + Math.sqrt(disc)) / (2 * A);
+  }
+  return s > 0 ? new THREE.Vector3(o.x + d.x * s, 0, o.z + d.z * s) : null;
+}
+let downAt = null;
+// drag the bean up / down to stretch or squash its height (same as the slider); a plain click still pokes
+let beanDrag = null;
+const hitsBean = (e) => {
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  return ray.intersectObject(bean, false).length > 0;
+};
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  downAt = [e.clientX, e.clientY];
+  if (hitsBean(e)) {
+    beanDrag = { y: e.clientY, h: S.beanHeight, active: false };
+    controls.enabled = false; // don't orbit while grabbing him
+  }
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (beanDrag) {
+    const dy = beanDrag.y - e.clientY; // up = taller
+    if (!beanDrag.active && Math.abs(dy) > 5) beanDrag.active = true;
+    if (!beanDrag.active) return;
+    const h = THREE.MathUtils.clamp(beanDrag.h + dy * 0.006, 0.2, 1.8);
+    if (h !== S.beanHeight) {
+      squashV += (h - S.beanHeight) * 25; // a little boing as he stretches
+      S.beanHeight = h;
+      rebuild();
+      gui.controllersRecursive().forEach((c) => c.updateDisplay());
+    }
+    renderer.domElement.style.cursor = 'ns-resize';
+  } else if (e.buttons === 0) renderer.domElement.style.cursor = hitsBean(e) ? 'ns-resize' : '';
+});
+addEventListener('pointerup', () => {
+  if (beanDrag) { beanDrag = null; controls.enabled = true; }
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 5) return; // it was a drag
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const parts = [bean, ...legs.map((l) => l.limb.mesh), ...legs.map((l) => l.foot), ...arms.map((a) => a.limb.mesh), ...arms.map((a) => a.hand)];
+  const poked = ray.intersectObjects(parts, true)[0];
+  if (poked) { poke(poked.object, ray.ray.direction, poked.point); return; }
+  const hit = pickBentGround(ray.ray);
+  if (hit) { sfx.tick(); goal = hit; marker.position.set(hit.x, 0.01, hit.z); marker.visible = true; marker.scale.setScalar(1.4); }
+});
+
+// ---------- loop ----------
+const vel = new THREE.Vector3(), prevVel = new THREE.Vector3(), acc = new THREE.Vector3();
+const move = new THREE.Vector3(), lastPos = new THREE.Vector3();
+let heading = 0, phase = 0, t = 0, lastStep = 0;
+
+// jumping: a quick crouch, then launch — stretch on the way up, splat on landing
+let jumpY = 0, jumpV = 0, airborne = false, crouch = -1, airT = 0, squint = 0, mouthOpen = 1, windA = 0;
+function jump() {
+  if (airborne || crouch >= 0) return;
+  crouch = 0.09;
+  squashV -= 2.2;
+}
+function launch(v) { jumpV = v; airborne = true; squashV += 2.5; sfx.jump(v); }
+
+// dancing: bounce on the beat, sway, stomp and wave the noodles about
+let dancing = false, danceT = 0, danceA = 0, danceBeat = 0, lastBeat = -1;
+// twirl: spins on the spot so the noodle arms fling out — reverses direction every bar
+let danceStyle = 'boogie', boogieA = 0, twirlA = 0, spinVel = 0;
+const DANCES = ['boogie', 'twirl'];
+function toggleDance() {
+  dancing = !dancing;
+  if (dancing) {
+    danceStyle = pick(DANCES);
+    danceT = 0; lastBeat = -1; goal = null; marker.visible = false;
+    sfx.danceOn();
+  } else sfx.danceOff();
+}
+// dust puffs kicked up when running
+const puffs = [];
+const puffGeo = new THREE.SphereGeometry(1, 16, 10);
+for (let i = 0; i < 24; i++) {
+  const m = new THREE.Mesh(puffGeo, grainy(new THREE.MeshBasicMaterial({ color: 0xe6e6e6, transparent: true, depthWrite: false })));
+  m.visible = false;
+  scene.add(m);
+  puffs.push({ m, life: 0, vel: new THREE.Vector3() });
+}
+let puffIdx = 0;
+function spawnPuff(x, z) {
+  const p = puffs[puffIdx++ % puffs.length];
+  p.life = 1;
+  p.m.position.set(x + rand(-0.12, 0.12), 0.08, z + rand(-0.12, 0.12));
+  p.vel.set(-vel.x * 0.12 + rand(-0.2, 0.2), rand(0.3, 0.6), -vel.z * 0.12 + rand(-0.2, 0.2));
+  p.m.visible = true;
+}
+
+// poking: shove the top of the bean away from the camera, squeeze the eyes, little hop
+// idle: after standing still a moment he fidgets — looks around, yawns, taps a foot, wiggles, hops
+const IDLE_DUR = { look: 2.6, yawn: 2.2, tap: 1.5, wiggle: 1.3, hop: 0.7 };
+const IDLES = ['look', 'look', 'yawn', 'tap', 'wiggle', 'hop'];
+const idle = { act: null, t: 0, p: 0, dir: 1, look: 0, turn: 0, mouth: 0, eyes: 1, tap: 0, stretch: 0 };
+function updateIdle(dt, still) {
+  idle.mouth = 0; idle.eyes = 1; idle.tap = 0; idle.stretch = 0;
+  let lookTo = 0;
+  if (!still) { idle.t = 0; idle.act = null; }
+  else {
+    idle.t += dt;
+    if (!idle.act && idle.t > 2.5) {
+      idle.act = pick(IDLES); idle.p = 0; idle.dir = pick([-1, 1]);
+      if (idle.act === 'hop') launch(3.4);
+      if (idle.act === 'yawn') sfx.yawn();
+    }
+    if (idle.act) {
+      idle.p += dt / IDLE_DUR[idle.act];
+      const p = Math.min(1, idle.p), bump = Math.sin(p * Math.PI); // 0 → 1 → 0
+      if (idle.act === 'look') lookTo = idle.dir * (p < 0.45 ? 1 : p < 0.9 ? -1 : 0);   // one way, then the other
+      if (idle.act === 'yawn') { idle.mouth = bump * 2.6; idle.eyes = 1 - bump * 0.85; idle.stretch = bump * 0.09; }
+      if (idle.act === 'tap') idle.tap = Math.max(0, Math.sin(p * Math.PI * 6)) * 0.13;   // three taps
+      if (idle.act === 'wiggle') {
+        const w = Math.sin(p * Math.PI * 8) * 9 * bump * S.jiggle * dt;
+        lagV.x += Math.cos(heading) * w; lagV.z -= Math.sin(heading) * w;
+      }
+      if (idle.p >= 1) { idle.act = null; idle.t = rand(0.2, 1.2); }
+    }
+  }
+  idle.look += (lookTo - idle.look) * (1 - Math.exp(-dt * 6));
+  idle.turn = idle.look * 0.35;
+  beanMat.uniforms.uLook.value.set(idle.look * 0.06, 0);
+}
+
+// screaming (Q): eyes clenched, mouth huge, body trembling, arms thrown up, camera shake
+let screamT = 0, shake = 0;
+const shakeOff = new THREE.Vector3();
+function scream() {
+  if (screamT > 0.3) return;
+  screamT = 1.4;
+  squashV += 3 * S.jiggle;
+  sfx.scream();
+  arms.forEach((a) => a.pos.forEach((p, i) => { a.prev[i].y = p.y - 0.09 * (i / ARM_N); }));
+}
+
+function poke(obj, dir, point) {
+  tmp.set(dir.x, 0, dir.z).normalize();
+  lagV.addScaledVector(tmp, 2.2 * S.jiggle);
+  squashV -= 2 * S.jiggle;
+  squint = 0.35;
+  mouthOpen = 2;
+  sfx.pop();
+  sfx.poke();
+  const arm = arms.find((a) => a.limb.mesh === obj || a.hand.getObjectById(obj.id));
+  // ripple starts where you poked the bean (or at the shoulder of a poked arm)
+  const origin = arm ? arm.shoulderBase.clone() : body.worldToLocal(point.clone());
+  ripples.push({ p: origin, t0: t, amp: 0.14 * R * S.jiggle });
+  if (ripples.length > 4) ripples.shift();
+  // poked an arm or hand? flick that noodle up
+  if (arm) arm.pos.forEach((p, i) => { const k = i / ARM_N; arm.prev[i].set(p.x - tmp.x * 0.06 * k, p.y - 0.12 * k, p.z - tmp.z * 0.06 * k); });
+}
+const SPEED = 2.4, RUN = 5.6;
+const clock = new THREE.Clock();
+
+let blinkT = 0, nextBlink = 2.5;
+function blinkPhase(dt) {
+  blinkT += dt;
+  if (blinkT > nextBlink) { blinkT = 0; nextBlink = rand(2, 5); }
+  const k = blinkT / 0.14;
+  return k < 1 ? Math.max(0.15, Math.abs(1 - 2 * k)) : 1;
+}
+
+function update(dt) {
+  t += dt;
+
+  move.set(0, 0, 0);
+  const kx = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+  const kz = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+  if (kx || kz) {
+    goal = null; marker.visible = false;
+    const fwd = camera.getWorldDirection(tmp).setY(0).normalize();
+    const right = tmp2.crossVectors(fwd, camera.up).normalize();
+    move.addScaledVector(fwd, kz).addScaledVector(right, kx).normalize();
+  } else if (goal) {
+    move.subVectors(goal, guy.position).setY(0);
+    const d = move.length();
+    if (d < 0.3) { goal = null; marker.visible = false; move.set(0, 0, 0); }
+    else move.multiplyScalar(Math.min(1, d / 1.2) / d);
+  }
+
+  prevVel.copy(vel);
+  const running = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  vel.lerp(move.multiplyScalar(running ? RUN : SPEED), 1 - Math.exp(-dt * 6));
+  // wind holes: getting close shoves him outward, with gusts swirling him about (feet stay down)
+  for (const v of vents) {
+    const dx = guy.position.x - v.g.position.x, dz = guy.position.z - v.g.position.z, d = Math.hypot(dx, dz);
+    const reach = VENT_R * 1.7;
+    if (d > reach) continue;
+    const k = (1 - d / reach) * v.s, push = 26 * k, gust = 14 * k;
+    const nx = d > 0.05 ? dx / d : Math.cos(t * 3), nz = d > 0.05 ? dz / d : Math.sin(t * 3);
+    vel.x += (nx * push + Math.sin(t * 5.3 + v.g.position.x) * gust) * dt;
+    vel.z += (nz * push + Math.cos(t * 4.1 + v.g.position.z) * gust) * dt;
+  }
+  acc.subVectors(vel, prevVel).divideScalar(dt);
+  lastPos.copy(guy.position);
+  guy.position.addScaledVector(vel, dt);
+
+  const speed = vel.length();
+  if (speed > 0.05) {
+    let dh = Math.atan2(vel.x, vel.z) - heading;
+    dh = Math.atan2(Math.sin(dh), Math.cos(dh));
+    heading += dh * (1 - Math.exp(-dt * 8));
+  }
+  guy.rotation.y = heading;
+
+  if (crouch >= 0) { crouch -= dt; if (crouch < 0) launch(7.5); }
+  if (airborne) {
+    jumpV -= 24 * dt;
+    jumpY += jumpV * dt;
+    if (jumpY <= 0) {
+      squashV -= Math.min(4, -jumpV * 0.35) * S.jiggle;
+      sfx.land(-jumpV);
+      jumpY = 0; jumpV = 0; airborne = false;
+    }
+  }
+  // holes: feet stay planted, but the bean gets buffeted while he stands in the updraft
+  const over = ventLift(guy.position.x, 0, guy.position.z);
+  windA += (Math.min(1, over * 1.6) - windA) * (1 - Math.exp(-dt * 4));
+  guy.position.y = jumpY;
+  if (windA > 0.02) {
+    lagV.x += (Math.random() - 0.5) * windA * 40 * dt * S.jiggle;
+    lagV.z += (Math.random() - 0.5) * windA * 40 * dt * S.jiggle;
+    squashV += (Math.random() - 0.5) * windA * 60 * dt * S.jiggle;
+  }
+  let near = 0;
+  for (const v of vents) near = Math.max(near, clamp01(1 - Math.hypot(guy.position.x - v.g.position.x, guy.position.z - v.g.position.z) / 5));
+  updateWindSound(near, windA);
+
+  // scream: trembling + shake
+  if (screamT > 0) {
+    screamT -= dt;
+    const k = clamp01(screamT / 0.4);
+    lagV.x += (Math.random() - 0.5) * 120 * dt * k;
+    lagV.z += (Math.random() - 0.5) * 120 * dt * k;
+    squashV += (0.1 - squash) * 60 * dt * k;
+    shake = Math.max(shake, 0.12 * k);
+    squint = Math.max(squint, 0.05);
+  }
+  shake *= Math.exp(-dt * 6);
+  airT += ((airborne ? 1 : 0) - airT) * (1 - Math.exp(-dt * 12));
+
+  const amt = Math.min(1, speed / SPEED) * (1 - airT);
+
+  if ((kx || kz || goal) && dancing) { dancing = false; sfx.danceOff(); }
+  danceA += ((dancing ? 1 : 0) - danceA) * (1 - Math.exp(-dt * 5));
+  updateMusicLevel(dancing);
+  boogieA = danceStyle === 'boogie' ? danceA : 0;
+  twirlA = danceStyle === 'twirl' ? danceA : 0;
+  if (dancing) {
+    danceT += dt;
+    const beat = danceT * 1.93, bi = Math.floor(beat); // ~116 bpm
+    danceBeat = beat * Math.PI;
+    if (bi !== lastBeat) {
+      lastBeat = bi;
+      sfx.beat(bi, danceStyle);
+      if (danceStyle === 'boogie') {
+        squashV -= 1.4 * S.jiggle;
+        const side = bi % 2 ? 1 : -1; // shimmy the jiggle left / right in body space
+        lagV.x += Math.cos(heading) * side * 1.4 * S.jiggle;
+        lagV.z -= Math.sin(heading) * side * 1.4 * S.jiggle;
+        if (bi % 4 === 3 && !airborne) launch(4.2);
+      } else {
+        squashV -= 0.8 * S.jiggle;
+        if (bi % 4 === 0) { sfx.whoosh(); if (!airborne) launch(3.6); } // new bar: hop and reverse
+      }
+    }
+  }
+  const spinDir = Math.floor(danceT * 1.93 / 4) % 2 ? -1 : 1;
+  spinVel += ((dancing && danceStyle === 'twirl' ? spinDir * 9 : 0) - spinVel) * (1 - Math.exp(-dt * 2.5));
+  heading += spinVel * dt;
+  updateIdle(dt, speed < 0.1 && !goal && !dancing && !airborne && crouch < 0 && screamT <= 0 && windA < 0.05);
+  guy.rotation.y = heading + Math.sin(danceBeat * 0.5) * 0.5 * boogieA + idle.turn;
+  // running: cartoon-fast little legs
+  const runA = clamp01((speed - SPEED) / (RUN - SPEED)) * (1 - airT);
+  phase += dt * (4 + speed * 4.5 + runA * 16);
+
+  // bean physics: top lags behind acceleration (and wobbles when he stops), squash on each footfall
+  lagV.addScaledVector(lagW, -90 * dt).multiplyScalar(Math.exp(-7 * dt)).addScaledVector(acc, -S.jiggle * dt);
+  lagW.addScaledVector(lagV, dt).clampLength(0, 0.45 * HALF_H);
+  hc = Math.cos(-heading); hs = Math.sin(-heading);
+  lagL.set(lagW.x * hc + lagW.z * hs, 0, -lagW.x * hs + lagW.z * hc);
+  const step = Math.floor(phase / Math.PI);
+  if (step !== lastStep) {
+    squashV -= 0.9 * amt * (1 - runA * 0.6) * S.jiggle;
+    lastStep = step;
+    if (amt > 0.3) sfx.step(runA > 0.5);
+    if (runA > 0.5) { // puff behind the foot that just landed
+      const l = legs[(step % 2) * 3 % 4];
+      tmp.set(l.x, 0, l.z).applyAxisAngle(THREE.Object3D.DEFAULT_UP, guy.rotation.y).add(guy.position);
+      spawnPuff(tmp.x, tmp.z);
+    }
+  }
+  const breathe = Math.sin(t * 2) * 0.018 * (1 - amt);
+  const stretch = airborne ? THREE.MathUtils.clamp(jumpV * 0.012, -0.06, 0.1) : 0;
+  squashV += (-180 * (squash - breathe - stretch - idle.stretch)) * dt;
+  squashV *= Math.exp(-9 * dt);
+  squash = THREE.MathUtils.clamp(squash + squashV * dt, -0.25, 0.25);
+
+  body.position.y = BODY_Y + Math.abs(Math.sin(phase)) * 0.05 * amt * (1 - runA * 0.4) + Math.abs(Math.sin(danceBeat)) * 0.07 * boogieA;
+  body.rotation.z = Math.sin(phase) * 0.07 * amt * (1 - runA * 0.5) + Math.sin(danceBeat) * 0.14 * boogieA;
+  // running: the legs outpace the bean, so it leans back and gets dragged along
+  body.rotation.x = -runA * 0.24;
+  body.rotation.z -= spinVel * 0.012; // twirl: lean out from the spin
+  while (ripples.length && t - ripples[0].t0 > 3) ripples.shift();
+  deformBean();
+  const open = blinkPhase(dt);
+  squint -= dt;
+  beanMat.uniforms.uBlink.value = squint > 0 ? 0.12 : open * idle.eyes;
+  // mouth drops open when poked or airborne, then eases shut
+  const screaming = screamT > 0 ? clamp01(screamT / 0.3) : 0;
+  mouthOpen += ((airborne ? 1.5 : 1) + windA * 0.8 + screaming * 3.2 + idle.mouth - mouthOpen) * (1 - Math.exp(-dt * (screaming ? 18 : 6)));
+  beanMat.uniforms.uOpen.value = mouthOpen;
+  beanMat.uniforms.uWide.value = 1 + screaming * 0.35;
+  body.updateMatrix();
+
+  for (const l of legs) {
+    const sn = Math.sin(phase + l.off), cs = Math.cos(phase + l.off);
+    const [hip, knee, foot] = l.pts;
+    hip.copy(l.hip).applyMatrix4(body.matrix);
+    foot.set(l.x, S.legThickness + Math.max(0, sn) * 0.32 * LEG_H * amt * (1 + runA * 0.5) + airT * 0.3 * LEG_H
+      + boogieA * Math.max(0, Math.sin(danceBeat + (l.sx > 0 ? 0 : Math.PI))) * 0.35 * LEG_H
+      + twirlA * Math.max(0, Math.sin(danceBeat * 2 + l.off)) * 0.15 * LEG_H + (l === legs[1] ? idle.tap : 0), l.z + cs * 0.14 * amt * (1 + runA * 1.2));
+    knee.set(l.x * 1.0, foot.y + (hip.y - foot.y) * 0.42, foot.z + 0.03 + cs * 0.04 * amt * (1 + runA * 2));
+    const legLen = LEG_H + 0.22;
+    l.limb.set(l.pts, ripples.length ? (u) => limbPulse(l.hip, legLen, u) : null);
+    l.foot.position.copy(foot);
+    l.foot.scale.setScalar(S.legThickness * (1 + 0.6 * limbPulse(l.hip, legLen, 1)));
+  }
+
+  guy.updateMatrixWorld(true);
+  for (let i = 0; i < 3; i++) arms.forEach((a) => a.step(dt / 3));
+
+  // camera + shadow follow
+  tmp.subVectors(guy.position, lastPos).setY(0); // camera doesn't bob with jumps
+  camera.position.add(tmp);
+  controls.target.add(tmp);
+  sun.position.set(guy.position.x + 4, 12, guy.position.z + 6);
+  sun.target.position.copy(guy.position).setY(0);
+  CURVE_C.value.set(guy.position.x, guy.position.z);
+  groundFill.position.set(guy.position.x, 0, guy.position.z);
+  ground.position.copy(groundFill.position);
+
+  for (const p of puffs) {
+    if (p.life <= 0) continue;
+    p.life -= dt * 2;
+    if (p.life <= 0) { p.m.visible = false; continue; }
+    p.m.position.addScaledVector(p.vel, dt);
+    p.m.scale.setScalar(0.08 + (1 - p.life) * 0.22);
+    p.m.material.opacity = p.life * 0.8;
+  }
+
+  const moveDir = vel.lengthSq() > 0.5 ? vel : null;
+  for (const v of vents) {
+    if (Math.hypot(v.g.position.x - guy.position.x, v.g.position.z - guy.position.z) > VENT_GONE) replantVent(v, guy.position, moveDir);
+    v.sv += (-140 * (v.s - 1)) * dt; v.sv *= Math.exp(-7 * dt); v.s += v.sv * dt;
+    v.g.scale.setScalar(Math.max(0.001, v.s));
+    for (const mo of v.motes) { // squares riding the updraft
+      mo.ph += dt * mo.speed;
+      if (mo.ph >= 1) { mo.ph -= 1; respawnMote(mo); }
+      mo.m.position.set(mo.x + Math.sin(t * 2 + mo.sway) * 0.08 * mo.ph, 0.1 + mo.ph * 3.2, mo.z + Math.cos(t * 1.7 + mo.sway) * 0.08 * mo.ph);
+      mo.m.quaternion.copy(camera.quaternion);
+      mo.m.rotateZ(mo.spin * mo.ph);
+      mo.m.scale.setScalar(mo.size * (1 - 0.6 * mo.ph));
+      mo.m.material.opacity = Math.min(1, mo.ph * 6) * (1 - mo.ph);
+    }
+  }
+
+
+  // flowers sway, and boing out of the way of the body and the dragging hands
+  for (const f of flowers) {
+    if (Math.hypot(f.g.position.x - guy.position.x, f.g.position.z - guy.position.z) > FLOWER_GONE) replant(f, guy.position, moveDir);
+    f.sv += (-140 * (f.s - 1)) * dt; f.sv *= Math.exp(-7 * dt); f.s += f.sv * dt;
+    f.g.scale.setScalar(Math.max(0.001, f.s));
+    let px = 0, pz = 0;
+    for (const [src, reach] of [[guy.position, R + 0.9], [arms[0].hand.position, 0.6], [arms[1].hand.position, 0.6]]) {
+      const dx = f.g.position.x - src.x, dz = f.g.position.z - src.z, d = Math.hypot(dx, dz) || 1;
+      const k = clamp01(1 - d / reach) * 0.9;
+      px += (dx / d) * k; pz += (dz / d) * k;
+    }
+    const push = Math.hypot(px, pz);
+    if (push > 0.35 && !f.pushed) { f.pushed = true; sfx.boing(); } else if (push < 0.1) f.pushed = false;
+    const sway = Math.sin(t * 1.3 + f.ph) * 0.04;
+    f.vx += (-120 * (f.tx - px - sway)) * dt; f.vx *= Math.exp(-6 * dt); f.tx += f.vx * dt;
+    f.vz += (-120 * (f.tz - pz)) * dt; f.vz *= Math.exp(-6 * dt); f.tz += f.vz * dt;
+    f.g.rotation.set(f.tz, 0, -f.tx);
+  }
+  if (marker.visible) marker.scale.setScalar(THREE.MathUtils.lerp(marker.scale.x, 1, 1 - Math.exp(-dt * 10)));
+}
+
+renderer.setAnimationLoop(() => {
+  const dt = THREE.MathUtils.clamp(clock.getDelta(), 1 / 240, 1 / 30);
+  update(dt);
+  arms.forEach((a) => a.render());
+  controls.update();
+  shakeOff.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(shake);
+  camera.position.add(shakeOff);
+  renderer.render(scene, camera);
+  camera.position.sub(shakeOff);
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
