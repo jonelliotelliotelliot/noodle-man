@@ -68,8 +68,8 @@ import GUI from 'lil-gui';
 const DEFAULTS = {
   beanHeight: 0.84, beanWidth: 0.77, legLength: 0.71, legThickness: 0.14, jiggle: 1.25, grain: 0.095, sound: true, volume: 0.6, music: true, musicVolume: 0.5,
   armLength: 3.3, armThickness: 0.14, armStiffness: 0.06, fingerWiggle: 1,
-  topLeft: 0xf4cf74, topRight: 0xff57ca, bottomLeft: 0x46dda3, bottomRight: 0xb7bbe6, middle: 0xff66c7,
-  hands: 0x6fafd8, lips: 0xef7a76, ground: 0xf1eef4, stem: 0xe6e6e6, curvature: 0.02,
+  topLeft: 0xf5ebdc, topRight: 0xf2765e, bottomLeft: 0x315b8c, bottomRight: 0x315b8c, middle: 0xf2765e,
+  hands: 0x315b8c, lips: 0xef7a76, ground: 0x413333, stem: 0x534646, curvature: 0.02,
 };
 const S = { ...DEFAULTS };
 const PALETTE_KEYS = ['topLeft', 'topRight', 'bottomLeft', 'bottomRight', 'middle', 'hands'];
@@ -300,7 +300,7 @@ const sfx = {
   beat: (bi, style) => {
     tone({ f0: 140, f1: 45, dur: 0.14, vol: 0.1 });                                   // soft kick
     if (bi % 2) noise({ dur: 0.035, vol: 0.02, freq: 7000, type: 'highpass' });       // tiny hat
-    const pat = style === 'twirl' ? [5, 7, 9, 7, 6, 4, 6, 7] : [0, 4, 2, 4, 3, 4, 2, 1];
+    const pat = style === 'twirl' ? [5, 7, 9, 7, 6, 4, 6, 7] : style === 'pogo' ? [2, 5, 4, 7, 2, 5, 6, 9] : [0, 4, 2, 4, 3, 4, 2, 1];
     marimba(PENTA[pat[bi % 8]]);
     if (style === 'boogie' && bi % 2) marimba(PENTA[pat[bi % 8] + 2], 0.26, 0.035); // offbeat answer
   },
@@ -472,23 +472,46 @@ function replant(f, center, dir) {
 
 // ---------- wind vents: grates in the ground that blow air straight up (they wander off-screen and reappear) ----------
 const VENT_R = 1.2, VENT_REACH = VENT_R * 1.2, VENT_GONE = 18, VENT_LIFT = 170;
-const holeTex = (() => {
-  const c = document.createElement('canvas'); c.width = c.height = 256;
-  const g = c.getContext('2d'), grad = g.createRadialGradient(128, 128, 0, 128, 128, 128);
-  // nearly flat inside with a short feathered rim, so it reads as a crisp shape rather than a smudge
-  grad.addColorStop(0, 'rgba(0,0,0,0.12)'); grad.addColorStop(0.86, 'rgba(0,0,0,0.105)'); grad.addColorStop(0.94, 'rgba(0,0,0,0.05)'); grad.addColorStop(1, 'rgba(0,0,0,0)');
-  g.fillStyle = grad; g.fillRect(0, 0, 256, 256);
-  return new THREE.CanvasTexture(c);
-})();
-const holeMat = grainy(new THREE.MeshBasicMaterial({ color: 0x000000, map: holeTex, transparent: true, depthWrite: false }));
+// a pit: flat two-tone hole. The opening is one hard-edged circle; inside, the floor is the same circle
+// slid toward the camera, so a crescent of inner wall shows on the far side — reads as depth from any angle.
+const PIT_VERT = /* glsl */`
+  uniform float uCurve;
+  uniform vec2 uCurveC;
+  varying vec2 vP;
+  void main() {
+    vP = position.xz;
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vec2 cd = wp.xz - uCurveC;
+    wp.y -= uCurve * dot(cd, cd);
+    gl_Position = projectionMatrix * viewMatrix * wp;
+  }`;
+const PIT_FRAG = /* glsl */`
+  uniform float uR, uGrain;
+  uniform vec2 uOff;
+  uniform vec3 uWall, uFloor;
+  varying vec2 vP;
+  float grainHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+  void main() {
+    float aa = fwidth(length(vP)) * 0.6;
+    float rim = length(vP) - uR;
+    if (rim > aa) discard;
+    float floorMask = 1.0 - smoothstep(-aa, aa, length(vP - uOff) - uR);
+    vec3 c = mix(uWall, uFloor, floorMask);
+    c += (grainHash(gl_FragCoord.xy) - 0.5) * uGrain;
+    gl_FragColor = vec4(c, 1.0 - smoothstep(-aa, aa, rim));
+  }`;
+const pitMat = () => new THREE.ShaderMaterial({
+  vertexShader: PIT_VERT, fragmentShader: PIT_FRAG, transparent: true, depthWrite: false,
+  uniforms: { uCurve: CURVE, uCurveC: CURVE_C, uGrain: GRAIN, uR: { value: VENT_R }, uOff: { value: new THREE.Vector2() }, uWall: { value: v3(0) }, uFloor: { value: v3(0) } },
+});
+const PIT_DEPTH = 0.65; // how much wall shows, as a fraction of the radius
 const windGeo = new THREE.PlaneGeometry(1, 1);
 const WIND_KEYS = ['topLeft', 'topRight', 'bottomLeft', 'bottomRight', 'middle', 'hands', 'lips'];
 const vents = [0, 1].map((i) => {
   const g = new THREE.Group();
-  // a subtle hole: just a soft, neutral shadow on the ground with a feathered edge
-  const spot = new THREE.Mesh(new THREE.PlaneGeometry(VENT_R * 2.2, VENT_R * 2.2, 8, 8).rotateX(-Math.PI / 2), holeMat);
-  spot.position.y = 0.012;
-  g.add(spot);
+  const pit = new THREE.Mesh(new THREE.PlaneGeometry(VENT_R * 2.1, VENT_R * 2.1, 8, 8).rotateX(-Math.PI / 2), pitMat());
+  pit.position.y = 0.012;
+  g.add(pit);
   // rising squares, same look as the poke particles; each one loops: born low, floats up, fades
   const motes = Array.from({ length: 16 }, () => {
     const m = new THREE.Mesh(windGeo, grainy(new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide })));
@@ -500,7 +523,7 @@ const vents = [0, 1].map((i) => {
   const a = i * Math.PI + rand(-0.6, 0.6), r = rand(5, 8);
   g.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
   scene.add(g);
-  return { g, motes, s: 1, sv: 0 };
+  return { g, pit, motes, s: 1, sv: 0 };
 });
 function respawnMote(mo) {
   const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * VENT_R * 0.6;
@@ -856,6 +879,10 @@ function rebuild() {
   setGradient(beanMat, grad());
   GRAIN.value = S.grain;
   stemMat.color.setHex(S.stem);
+  for (const v of vents) {
+    v.pit.material.uniforms.uWall.value.copy(v3(S.ground)).multiplyScalar(0.72);
+    v.pit.material.uniforms.uFloor.value.copy(v3(S.ground)).multiplyScalar(0.22);
+  }
   document.documentElement.style.setProperty('--accent', '#' + S.middle.toString(16).padStart(6, '0'));
   CURVE.value = S.curvature;
   groundMat.color.setHex(S.ground);
@@ -1018,12 +1045,14 @@ function launch(v) { jumpV = v; airborne = true; squashV += 2.5; sfx.jump(v); }
 // dancing: bounce on the beat, sway, stomp and wave the noodles about
 let dancing = false, danceT = 0, danceA = 0, danceBeat = 0, lastBeat = -1;
 // twirl: spins on the spot so the noodle arms fling out — reverses direction every bar
-let danceStyle = 'boogie', boogieA = 0, twirlA = 0, spinVel = 0;
-const DANCES = ['boogie', 'twirl'];
+// pogo: bounces on every beat (big squash + stretch), a quarter-turn every other hop, arms whipping
+let danceStyle = 'boogie', boogieA = 0, twirlA = 0, spinVel = 0, pogoTurn = 0, danceIdx = -1;
+const DANCES = ['boogie', 'twirl', 'pogo'];
 function toggleDance() {
   dancing = !dancing;
   if (dancing) {
-    danceStyle = pick(DANCES);
+    danceIdx = (danceIdx + 1) % DANCES.length; // boogie → twirl → pogo → boogie …
+    danceStyle = DANCES[danceIdx];
     danceT = 0; lastBeat = -1; goal = null; marker.visible = false;
     sfx.danceOn();
   } else sfx.danceOff();
@@ -1217,15 +1246,20 @@ function update(dt) {
         lagV.x += Math.cos(heading) * side * 1.4 * S.jiggle;
         lagV.z -= Math.sin(heading) * side * 1.4 * S.jiggle;
         if (bi % 4 === 3 && !airborne) launch(4.2);
-      } else {
+      } else if (danceStyle === 'twirl') {
         squashV -= 0.8 * S.jiggle;
         if (bi % 4 === 0) { sfx.whoosh(); if (!airborne) launch(3.6); } // new bar: hop and reverse
+      } else { // pogo
+        if (!airborne) launch(5.2);
+        if (bi % 2) pogoTurn += (Math.floor(bi / 8) % 2 ? -1 : 1) * Math.PI / 2; // turn one way for a while, then back
       }
     }
   }
   const spinDir = Math.floor(danceT * 1.93 / 4) % 2 ? -1 : 1;
   spinVel += ((dancing && danceStyle === 'twirl' ? spinDir * 9 : 0) - spinVel) * (1 - Math.exp(-dt * 2.5));
   heading += spinVel * dt;
+  const turnStep = pogoTurn * (1 - Math.exp(-dt * 12)); // snap through each quarter-turn mid-air
+  heading += turnStep; pogoTurn -= turnStep;
   updateIdle(dt, speed < 0.1 && !goal && !dancing && !airborne && crouch < 0 && screamT <= 0 && windA < 0.05);
   guy.rotation.y = heading + Math.sin(danceBeat * 0.5) * 0.5 * boogieA + idle.turn;
   // running: cartoon-fast little legs
@@ -1312,6 +1346,10 @@ function update(dt) {
     if (Math.hypot(v.g.position.x - guy.position.x, v.g.position.z - guy.position.z) > VENT_GONE) replantVent(v, guy.position, moveDir);
     v.sv += (-140 * (v.s - 1)) * dt; v.sv *= Math.exp(-7 * dt); v.s += v.sv * dt;
     v.g.scale.setScalar(Math.max(0.001, v.s));
+    // slide the pit floor toward the camera; less wall shows the more top-down we look
+    tmp.subVectors(v.g.position, camera.position);
+    const horiz = Math.hypot(tmp.x, tmp.z) / (tmp.length() || 1);
+    v.pit.material.uniforms.uOff.value.set(-tmp.x, -tmp.z).normalize().multiplyScalar(VENT_R * PIT_DEPTH * horiz);
     for (const mo of v.motes) { // squares riding the updraft
       mo.ph += dt * mo.speed;
       if (mo.ph >= 1) { mo.ph -= 1; respawnMote(mo); }
