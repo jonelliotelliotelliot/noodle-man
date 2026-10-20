@@ -17,7 +17,9 @@
   }
   #keys.dim { opacity: .35; }
   #keys:hover { opacity: 1; }
-  #keys .grp { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  #keys .grp { display: flex; flex-direction: column; align-items: center; gap: 6px;
+    transition: opacity .35s, transform .5s cubic-bezier(.34, 1.56, .64, 1); }
+  #keys.waiting .grp { opacity: 0; transform: translateY(14px) scale(.85); pointer-events: none; }
   #keys label { color: var(--label); font-weight: 500; letter-spacing: .02em; white-space: nowrap; }
   #keys .k {
     min-width: 24px; height: 24px; padding: 0 7px; box-sizing: border-box; display: inline-flex;
@@ -34,6 +36,19 @@
   #keys .wasd .k:nth-child(4) { grid-area: 2 / 3; }
   #keys .space { width: 74px; }
   #keys .mouse { width: 18px; height: 24px; color: var(--ink); }
+  /* tap to start: browsers keep audio locked until a click, so the drop-in waits for one */
+  #start {
+    position: fixed; inset: 0; display: grid; place-items: center; z-index: 10; cursor: pointer;
+    transition: opacity .45s; font: 600 13px/1 -apple-system, system-ui, sans-serif; user-select: none;
+  }
+  #start.gone { opacity: 0; pointer-events: none; }
+  #start .pill {
+    display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px 22px; border-radius: 14px;
+    background: var(--cap); border: 1px solid var(--cap-edge); box-shadow: 0 3px 0 var(--cap-edge); color: var(--ink);
+    animation: bob 1.6s ease-in-out infinite;
+  }
+  #start:active .pill { transform: translateY(3px); box-shadow: 0 0 0 var(--cap-edge); }
+  @keyframes bob { 50% { transform: translateY(-4px); } }
   .lil-gui { --background-color: rgba(250, 250, 250, 0.62); --text-color: #555; --title-background-color: rgba(240, 240, 240, 0.7);
     --title-text-color: #555; --widget-color: rgba(225, 225, 228, 0.7); --hover-color: rgba(215, 215, 220, 0.8); --focus-color: rgba(205, 205, 210, 0.9);
     --number-color: #8a6fa0; --string-color: #6a9a8a; }
@@ -48,7 +63,8 @@
 </script>
 </head>
 <body>
-<div id="keys" aria-label="Controls">
+<div id="start" role="button" aria-label="Start"><div class="pill">Start</div></div>
+<div id="keys" class="waiting" aria-label="Controls">
   <div class="grp"><div class="wasd"><span class="k" data-code="KeyW">W</span><span class="k" data-code="KeyA">A</span><span class="k" data-code="KeyS">S</span><span class="k" data-code="KeyD">D</span></div><label>walk</label></div>
   <div class="grp"><span class="k" data-code="ShiftLeft">⇧ shift</span><label>+ run</label></div>
   <div class="grp"><span class="k space" data-code="Space">space</span><label>jump</label></div>
@@ -332,6 +348,20 @@ const sfx = {
     }
     lfo.start(t0); lfo.stop(t0 + 1.45);
     noise({ dur: 1.2, vol: 0.02, freq: 2500, q: 0.8 });
+  },
+  whistle: () => tone({ type: 'sine', f0: 1700, f1: 520, dur: 0.95, vol: 0.016, attack: 0.08, vib: 18, vibHz: 6 }), // faint cartoon falling whistle
+  impact: () => { // the drop-in landing: deep thump + crunchy body + wet splat + short rumble
+    tone({ f0: 130, f1: 38, dur: 0.45, vol: 0.22, attack: 0.002 });                 // thump
+    tone({ type: 'triangle', f0: 95, f1: 45, dur: 0.3, vol: 0.08, attack: 0.002 });  // body
+    noise({ dur: 0.22, vol: 0.12, freq: 900, f1: 160, type: 'lowpass' });            // crunch
+    noise({ dur: 0.09, vol: 0.05, freq: 1800, f1: 700, q: 2, delay: 0.015 });        // splat
+    tone({ f0: 420, f1: 180, dur: 0.16, vol: 0.035, vib: 60, vibHz: 22, delay: 0.03 }); // squelch wobble
+    noise({ dur: 0.7, vol: 0.035, freq: 140, type: 'lowpass', delay: 0.05 });        // rumble tail
+  },
+  trip: () => tone({ f0: 320, f1: 950, dur: 0.22, vol: 0.06, vib: 40, vibHz: 16 }),
+  oof: () => {
+    tone({ f0: 260, f1: 130, dur: 0.3, vol: 0.09, vib: 18, vibHz: 9 });
+    noise({ dur: 0.12, vol: 0.07, freq: 300, type: 'lowpass' });
   },
   yawn: () => tone({ type: 'triangle', f0: 540, f1: 250, dur: 1.3, vol: 0.045, attack: 0.35, vib: 9, vibHz: 5 }),
   pop: () => tone({ f0: rand(900, 1300), f1: rand(1800, 2400), dur: 0.06, vol: 0.03, type: 'triangle' }),
@@ -927,6 +957,8 @@ fs.add(S, 'music');
 fs.add(S, 'musicVolume', 0, 1, 0.01).name('music volume');
 gui.add({ reset: () => { Object.assign(S, DEFAULTS); gui.controllersRecursive().forEach((c) => c.updateDisplay()); rebuild(); } }, 'reset').name('reset all');
 gui.onChange(() => { rebuild(); setVolume(); });
+// hidden on the start screen; fades in once you press Start
+Object.assign(gui.domElement.style, { opacity: '0', pointerEvents: 'none', transition: 'opacity .5s' });
 fc.close();
 fs.close();
 if (innerWidth < 900) gui.close();
@@ -952,6 +984,13 @@ const lightKey = (code, on) => keyEls.forEach((el) => { if (el.dataset.code === 
 let dimTimer = 0;
 function wakeLegend() { legend.classList.remove('dim'); clearTimeout(dimTimer); dimTimer = setTimeout(() => legend.classList.add('dim'), 7000); }
 wakeLegend();
+legend.querySelectorAll('.grp').forEach((g, i) => { g.style.transitionDelay = `${i * 70}ms`; });
+function revealLegend() {
+  if (!legend.classList.contains('waiting')) return;
+  legend.classList.remove('waiting');
+  wakeLegend();
+  setTimeout(() => legend.querySelectorAll('.grp').forEach((g) => { g.style.transitionDelay = ''; }), 1200); // later dim/hover stays snappy
+}
 addEventListener('keydown', (e) => { lightKey(e.code, true); wakeLegend(); });
 addEventListener('keyup', (e) => lightKey(e.code, false));
 for (const el of keyEls) {
@@ -1031,12 +1070,85 @@ renderer.domElement.addEventListener('pointerup', (e) => {
 // ---------- loop ----------
 const vel = new THREE.Vector3(), prevVel = new THREE.Vector3(), acc = new THREE.Vector3();
 const move = new THREE.Vector3(), lastPos = new THREE.Vector3();
-let heading = 0, phase = 0, t = 0, lastStep = 0;
+let heading = Math.atan2(camera.position.x, camera.position.z), phase = 0, t = 0, lastStep = 0; // start facing the camera
 
 // jumping: a quick crouch, then launch — stretch on the way up, splat on landing
 let jumpY = 0, jumpV = 0, airborne = false, crouch = -1, airT = 0, squint = 0, mouthOpen = 1, windA = 0;
+// intro: he drops in from above the frame, tipping forward on the way down, and lands flat on his face
+// (then the trip's lie-there-and-get-up plays out). Big camera shake and a ring of dust on impact.
+const INTRO_HEIGHT = 11;
+const intro = { active: true, waiting: true, shadow: 0 }; // shadow: floor-shadow fade-in after the tap // waiting: hanging above the frame until the first tap
+function startIntro() {
+  // arrive turned 35–55° away from the camera (left or right), with a sideways tilt so he lands askew
+  const side = pick([-1, 1]);
+  heading = Math.atan2(camera.position.x, camera.position.z) + side * rand(0.6, 0.95);
+  guy.rotation.y = heading;
+  fall.roll = -side * rand(0.28, 0.42);
+  jumpY = INTRO_HEIGHT; jumpV = 0; airborne = true;
+  guy.position.y = jumpY;
+  guy.updateMatrixWorld(true);
+  arms.forEach((a) => a.pos.forEach((p, i) => { body.localToWorld(p.set(a.side * (0.6 + i * 0.05), 0.4 + i * 0.12, 0)); a.prev[i].copy(p); })); // arms trail up
+}
+function beginDrop() {
+  if (!intro.waiting) return;
+  intro.waiting = false;
+  Object.assign(gui.domElement.style, { opacity: '', pointerEvents: '' });
+  audioCtx();
+  sfx.whistle();
+  document.getElementById('start').classList.add('gone');
+}
+document.getElementById('start').addEventListener('pointerdown', (e) => { e.preventDefault(); beginDrop(); });
+addEventListener('keydown', () => beginDrop());
+function introLanding() {
+  intro.active = false;
+  fall.t = FALL_DOWN; fall.hit = false; fall.big = true; // straight into the splat + lie + get-up of the trip
+  shake = 0.32;
+  for (let k = 0; k < 10; k++) { // dust ring
+    const a = (k / 10) * Math.PI * 2;
+    spawnPuff(guy.position.x + Math.cos(a) * 0.9, guy.position.z + Math.sin(a) * 0.9);
+  }
+}
+
+// trip & fall while running: pitch forward onto his face, slide, lie there kicking, then spring back up
+const FALL_DOWN = 0.32, FALL_LIE = 1.5, FALL_UP = 2.15;
+const fall = { t: -1, hit: false, roll: 0 }; // roll: sideways tilt while down (the intro lands askew)
+let fallA = 0;
+function trip() {
+  if (fall.t >= 0 || airborne) return;
+  fall.t = 0; fall.hit = false;
+  if (dancing) { dancing = false; sfx.danceOff(); }
+  goal = null; marker.visible = false;
+  fall.roll = 0;
+  sfx.trip();
+  squint = 0.4;
+  const fx = Math.sin(heading), fz = Math.cos(heading);
+  arms.forEach((a) => a.pos.forEach((p, i) => { const k = i / ARM_N; a.prev[i].set(p.x - fx * 0.12 * k, p.y - 0.05 * k, p.z - fz * 0.12 * k); })); // arms fling forward
+}
+const easeOutBack = (p) => 1 + 2.70158 * (p - 1) ** 3 + 1.70158 * (p - 1) ** 2;
+function updateFall(dt) {
+  fallA = 0;
+  if (intro.active) { fallA = smooth(clamp01(1 - (jumpY - 0.4) / 5)); return; } // tipping forward as the ground rushes up
+  if (fall.t < 0) return;
+  fall.t += dt;
+  if (fall.t < FALL_DOWN) fallA = (fall.t / FALL_DOWN) ** 2; // tipping over, faster and faster
+  else if (fall.t < FALL_LIE) {
+    fallA = 1;
+    squint = Math.max(squint, 0.05);
+    if (!fall.hit) { // splat
+      fall.hit = true;
+      if (fall.big) { sfx.impact(); setTimeout(sfx.oof, 120); fall.big = false; } // the drop-in hits harder
+      else { sfx.land(9); sfx.oof(); }
+      squashV -= 4 * S.jiggle;
+      shake = Math.max(shake, 0.09);
+      ripples.push({ p: new THREE.Vector3(0, HALF_H * 0.3, R), t0: t, amp: 0.14 * R * S.jiggle });
+      if (ripples.length > 4) ripples.shift();
+    }
+  } else if (fall.t < FALL_UP) fallA = 1 - easeOutBack((fall.t - FALL_LIE) / (FALL_UP - FALL_LIE)); // pops up, rocks back a bit
+  else { fall.t = -1; squashV += 2 * S.jiggle; revealLegend(); } // up again: show the controls
+}
+
 function jump() {
-  if (airborne || crouch >= 0) return;
+  if (airborne || crouch >= 0 || fall.t >= 0 || intro.active) return;
   crouch = 0.09;
   squashV -= 2.2;
 }
@@ -1153,7 +1265,8 @@ function update(dt) {
   move.set(0, 0, 0);
   const kx = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
   const kz = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-  if (kx || kz) {
+  if (fall.t >= 0 || intro.active) { /* sprawled or still dropping in: no steering */ }
+  else if (kx || kz) {
     goal = null; marker.visible = false;
     const fwd = camera.getWorldDirection(tmp).setY(0).normalize();
     const right = tmp2.crossVectors(fwd, camera.up).normalize();
@@ -1167,7 +1280,7 @@ function update(dt) {
 
   prevVel.copy(vel);
   const running = keys.has('ShiftLeft') || keys.has('ShiftRight');
-  vel.lerp(move.multiplyScalar(running ? RUN : SPEED), 1 - Math.exp(-dt * 6));
+  vel.lerp(move.multiplyScalar(running ? RUN : SPEED), 1 - Math.exp(-dt * (fall.t >= 0 ? 2.2 : 6))); // a fall slides to a stop
   // wind holes: getting close shoves him outward, with gusts swirling him about (feet stay down)
   for (const v of vents) {
     const dx = guy.position.x - v.g.position.x, dz = guy.position.z - v.g.position.z, d = Math.hypot(dx, dz);
@@ -1191,13 +1304,16 @@ function update(dt) {
   guy.rotation.y = heading;
 
   if (crouch >= 0) { crouch -= dt; if (crouch < 0) launch(7.5); }
-  if (airborne) {
+  if (!intro.waiting && intro.shadow < 1) intro.shadow = Math.min(1, intro.shadow + dt / 0.7);
+  ground.material.opacity = 0.1 * intro.shadow;
+  if (airborne && !intro.waiting) {
     jumpV -= 24 * dt;
     jumpY += jumpV * dt;
     if (jumpY <= 0) {
       squashV -= Math.min(4, -jumpV * 0.35) * S.jiggle;
-      sfx.land(-jumpV);
+      if (!intro.active) sfx.land(-jumpV);
       jumpY = 0; jumpV = 0; airborne = false;
+      if (intro.active) introLanding();
     }
   }
   // holes: feet stay planted, but the bean gets buffeted while he stands in the updraft
@@ -1226,7 +1342,8 @@ function update(dt) {
   shake *= Math.exp(-dt * 6);
   airT += ((airborne ? 1 : 0) - airT) * (1 - Math.exp(-dt * 12));
 
-  const amt = Math.min(1, speed / SPEED) * (1 - airT);
+  updateFall(dt);
+  const amt = Math.min(1, speed / SPEED) * (1 - airT) * (1 - clamp01(fallA));
 
   if ((kx || kz || goal) && dancing) { dancing = false; sfx.danceOff(); }
   danceA += ((dancing ? 1 : 0) - danceA) * (1 - Math.exp(-dt * 5));
@@ -1260,7 +1377,7 @@ function update(dt) {
   heading += spinVel * dt;
   const turnStep = pogoTurn * (1 - Math.exp(-dt * 12)); // snap through each quarter-turn mid-air
   heading += turnStep; pogoTurn -= turnStep;
-  updateIdle(dt, speed < 0.1 && !goal && !dancing && !airborne && crouch < 0 && screamT <= 0 && windA < 0.05);
+  updateIdle(dt, speed < 0.1 && !goal && !dancing && !airborne && crouch < 0 && screamT <= 0 && windA < 0.05 && fall.t < 0);
   guy.rotation.y = heading + Math.sin(danceBeat * 0.5) * 0.5 * boogieA + idle.turn;
   // running: cartoon-fast little legs
   const runA = clamp01((speed - SPEED) / (RUN - SPEED)) * (1 - airT);
@@ -1276,6 +1393,11 @@ function update(dt) {
     squashV -= 0.9 * amt * (1 - runA * 0.6) * S.jiggle;
     lastStep = step;
     if (amt > 0.3) sfx.step(runA > 0.5);
+    if (runA > 0.7 && fall.t < 0 && !airborne) {
+      const ax = guy.position.x + Math.sin(heading) * 0.45, az = guy.position.z + Math.cos(heading) * 0.45;
+      const flowerAhead = flowers.some((f) => f.s > 0.5 && Math.hypot(f.g.position.x - ax, f.g.position.z - az) < 0.35);
+      if (flowerAhead || Math.random() < 0.006) trip();
+    }
     if (runA > 0.5) { // puff behind the foot that just landed
       const l = legs[(step % 2) * 3 % 4];
       tmp.set(l.x, 0, l.z).applyAxisAngle(THREE.Object3D.DEFAULT_UP, guy.rotation.y).add(guy.position);
@@ -1293,6 +1415,11 @@ function update(dt) {
   // running: the legs outpace the bean, so it leans back and gets dragged along
   body.rotation.x = -runA * 0.24;
   body.rotation.z -= spinVel * 0.012; // twirl: lean out from the spin
+  // tripping: pivot forward onto his face, dropping to lie on the ground just ahead of his feet
+  body.rotation.x += fallA * 1.45;
+  body.rotation.z += clamp01(fallA) * fall.roll;
+  body.position.y = THREE.MathUtils.lerp(body.position.y, R * 1.08, clamp01(fallA));
+  body.position.z = fallA * HALF_H * 0.55;
   while (ripples.length && t - ripples[0].t0 > 3) ripples.shift();
   deformBean();
   const open = blinkPhase(dt);
@@ -1300,7 +1427,7 @@ function update(dt) {
   beanMat.uniforms.uBlink.value = squint > 0 ? 0.12 : open * idle.eyes;
   // mouth drops open when poked or airborne, then eases shut
   const screaming = screamT > 0 ? clamp01(screamT / 0.3) : 0;
-  mouthOpen += ((airborne ? 1.5 : 1) + windA * 0.8 + screaming * 3.2 + idle.mouth - mouthOpen) * (1 - Math.exp(-dt * (screaming ? 18 : 6)));
+  mouthOpen += ((airborne ? 1.5 : 1) + windA * 0.8 + screaming * 3.2 + idle.mouth + clamp01(fallA) * 1.6 - mouthOpen) * (1 - Math.exp(-dt * (screaming ? 18 : 6)));
   beanMat.uniforms.uOpen.value = mouthOpen;
   beanMat.uniforms.uWide.value = 1 + screaming * 0.35;
   body.updateMatrix();
@@ -1313,6 +1440,14 @@ function update(dt) {
       + boogieA * Math.max(0, Math.sin(danceBeat + (l.sx > 0 ? 0 : Math.PI))) * 0.35 * LEG_H
       + twirlA * Math.max(0, Math.sin(danceBeat * 2 + l.off)) * 0.15 * LEG_H + (l === legs[1] ? idle.tap : 0), l.z + cs * 0.14 * amt * (1 + runA * 1.2));
     knee.set(l.x * 1.0, foot.y + (hip.y - foot.y) * 0.42, foot.z + 0.03 + cs * 0.04 * amt * (1 + runA * 2));
+    if (fallA > 0) { // sprawled: legs trail out behind, kicking
+      const k = clamp01(fallA);
+      tmp.copy(hip).add(tmp2.set(l.x * 0.25, -0.12 + Math.sin(t * 16 + l.off) * 0.12 * k, -LEG_H * 0.8));
+      foot.lerp(tmp, k);
+      tmp.lerpVectors(hip, foot, 0.5);
+      tmp.y += 0.1;
+      knee.lerp(tmp, k);
+    }
     const legLen = LEG_H + 0.22;
     l.limb.set(l.pts, ripples.length ? (u) => limbPulse(l.hip, legLen, u) : null);
     l.foot.position.copy(foot);
@@ -1382,6 +1517,8 @@ function update(dt) {
   }
   if (marker.visible) marker.scale.setScalar(THREE.MathUtils.lerp(marker.scale.x, 1, 1 - Math.exp(-dt * 10)));
 }
+
+startIntro();
 
 renderer.setAnimationLoop(() => {
   const dt = THREE.MathUtils.clamp(clock.getDelta(), 1 / 240, 1 / 30);
